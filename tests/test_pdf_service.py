@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 from docx import Document
@@ -13,6 +14,7 @@ from webapp.pdf_service import (
     ConversionJobManager,
     ConversionResult,
     ConversionSubmission,
+    ConversionOptions,
     NormalizedBlock,
     PDFConversionService,
     _mineru_cli_from_python,
@@ -94,6 +96,76 @@ print("ok")
     assert [block.kind for block in blocks] == ["title", "paragraph", "list", "table", "code"]
     assert blocks[2].items == ["One", "Two"]
     assert "<table>" in blocks[3].table_html
+
+
+def test_markdown_latex_is_written_as_word_math(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    blocks = service._normalize_markdown(
+        """# Math
+
+Inline \\(a+b\\) text.
+
+\\[c=d\\]
+"""
+    )
+    output_path = tmp_path / "math.docx"
+    service._write_docx(blocks, output_path, base_dirs=[tmp_path])
+
+    with zipfile.ZipFile(output_path) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+
+    assert "<m:oMath" in document_xml
+    assert ">a<" in document_xml
+    assert ">b<" in document_xml
+    assert ">c<" in document_xml
+    assert ">d<" in document_xml
+
+
+def test_run_mineru_passes_cli_options_and_config(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    captured = {}
+
+    def fake_command() -> list[str]:
+        return ["mineru"]
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(service, "_mineru_command", fake_command)
+    monkeypatch.setattr("webapp.pdf_service.subprocess.run", fake_run)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    options = ConversionOptions(
+        backend="pipeline",
+        parse_method="ocr",
+        language="latin",
+        formula_enable=False,
+        table_enable=True,
+        start_page=2,
+        end_page=4,
+        server_url="http://engine.test/v1",
+        latex_delimiters_type="b",
+    )
+    service._run_mineru(tmp_path / "input.pdf", output_dir, "pipeline", options)
+
+    command = captured["command"]
+    assert command[:7] == ["mineru", "-p", str(tmp_path / "input.pdf"), "-o", str(output_dir), "-b", "pipeline"]
+    assert ["-m", "ocr"] == command[7:9]
+    assert "-l" in command and "latin" in command
+    assert "-s" in command and "2" in command
+    assert "-e" in command and "4" in command
+    assert "-u" in command and "http://engine.test/v1" in command
+    assert captured["env"]["MINERU_FORMULA_ENABLE"] == "false"
+    assert Path(captured["env"]["MINERU_TOOLS_CONFIG_JSON"]).exists()
 
 
 def test_job_manager_reaches_completed_status(tmp_path: Path) -> None:

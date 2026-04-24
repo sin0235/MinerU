@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 import uuid
+import html.entities
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,8 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 from docx import Document
-from docx.enum.text import WD_BREAK
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import nsdecls
 from docx.shared import Inches, Pt
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
@@ -34,6 +36,27 @@ ALLOWED_BACKENDS = {
     "hybrid-http-client",
     "vlm-http-client",
 }
+ALLOWED_PARSE_METHODS = {"auto", "txt", "ocr"}
+ALLOWED_LANGUAGES = {
+    "ch",
+    "ch_server",
+    "ch_lite",
+    "en",
+    "korean",
+    "japan",
+    "chinese_cht",
+    "ta",
+    "te",
+    "ka",
+    "th",
+    "el",
+    "latin",
+    "arabic",
+    "east_slavic",
+    "cyrillic",
+    "devanagari",
+}
+ALLOWED_LATEX_DELIMITER_TYPES = {"a", "b", "all"}
 SKIPPED_CONTENT_TYPES = {
     "header",
     "footer",
@@ -45,6 +68,32 @@ SKIPPED_CONTENT_TYPES = {
     "page_footnote",
     "seal",
 }
+
+
+@dataclass(slots=True)
+class ConversionOptions:
+    backend: str = "auto"
+    parse_method: str = "auto"
+    language: str = "ch"
+    formula_enable: bool = True
+    table_enable: bool = True
+    start_page: int = 0
+    end_page: int | None = None
+    server_url: str = ""
+    latex_delimiters_type: str = "b"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "parse_method": self.parse_method,
+            "language": self.language,
+            "formula_enable": self.formula_enable,
+            "table_enable": self.table_enable,
+            "start_page": self.start_page,
+            "end_page": self.end_page,
+            "server_url": self.server_url,
+            "latex_delimiters_type": self.latex_delimiters_type,
+        }
 
 
 @dataclass(slots=True)
@@ -73,6 +122,7 @@ class ConversionSubmission:
     original_filename: str
     input_path: Path
     input_size_bytes: int
+    options: ConversionOptions = field(default_factory=ConversionOptions)
 
 
 @dataclass(slots=True)
@@ -153,6 +203,13 @@ class PDFConversionService:
         self.timeout_seconds = _env_int("MINERU_TIMEOUT_SECONDS", default=3600, minimum=60, maximum=24 * 3600)
 
     def create_submission(self, upload: FileStorage) -> ConversionSubmission:
+        return self.create_submission_with_options(upload, ConversionOptions())
+
+    def create_submission_with_options(
+        self,
+        upload: FileStorage,
+        options: ConversionOptions | None = None,
+    ) -> ConversionSubmission:
         if not upload or not upload.filename:
             raise ValueError("Can upload file PDF.")
 
@@ -182,6 +239,7 @@ class PDFConversionService:
             original_filename=original_filename,
             input_path=input_path,
             input_size_bytes=size_bytes,
+            options=options or ConversionOptions(),
         )
 
     def job_dir(self, job_id: str) -> Path:
@@ -266,8 +324,8 @@ class PDFConversionService:
             warnings=warnings,
         )
 
-    def resolve_backend(self) -> str:
-        requested = (os.getenv("PDF_WORD_BACKEND") or "auto").strip() or "auto"
+    def resolve_backend(self, requested: str | None = None) -> str:
+        requested = (requested or os.getenv("PDF_WORD_BACKEND") or "auto").strip() or "auto"
         if requested not in ALLOWED_BACKENDS:
             return "pipeline"
         if requested != "auto":
@@ -288,8 +346,8 @@ class PDFConversionService:
         mineru_output_dir.mkdir(parents=True, exist_ok=True)
         docx_dir.mkdir(parents=True, exist_ok=True)
 
-        backend = self.resolve_backend()
-        self._run_mineru(submission.input_path, mineru_output_dir, backend)
+        backend = self.resolve_backend(submission.options.backend)
+        self._run_mineru(submission.input_path, mineru_output_dir, backend, submission.options)
 
         blocks, source_path, source_kind, page_count, warnings = self._load_normalized_blocks(mineru_output_dir)
         if not blocks:
@@ -324,13 +382,38 @@ class PDFConversionService:
             raise FileNotFoundError(relative_path)
         return candidate
 
-    def _run_mineru(self, pdf_path: Path, output_dir: Path, backend: str) -> None:
-        command = [*self._mineru_command(), "-p", str(pdf_path), "-o", str(output_dir), "-b", backend]
+    def _run_mineru(self, pdf_path: Path, output_dir: Path, backend: str, options: ConversionOptions) -> None:
+        command = [
+            *self._mineru_command(),
+            "-p",
+            str(pdf_path),
+            "-o",
+            str(output_dir),
+            "-b",
+            backend,
+            "-m",
+            options.parse_method,
+            "-l",
+            options.language,
+            "-f",
+            _cli_bool(options.formula_enable),
+            "-t",
+            _cli_bool(options.table_enable),
+        ]
+        if options.start_page > 0:
+            command.extend(["-s", str(options.start_page)])
+        if options.end_page is not None:
+            command.extend(["-e", str(options.end_page)])
+        if options.server_url:
+            command.extend(["-u", options.server_url])
         if self.api_url:
             command.extend(["--api-url", self.api_url])
 
         env = os.environ.copy()
         env.setdefault("MINERU_MODEL_SOURCE", self.model_source)
+        env["MINERU_FORMULA_ENABLE"] = _env_bool(options.formula_enable)
+        env["MINERU_TABLE_ENABLE"] = _env_bool(options.table_enable)
+        env["MINERU_TOOLS_CONFIG_JSON"] = str(_write_mineru_config(output_dir, options))
         if self.vl_model_name:
             env.setdefault("MINERU_VL_MODEL_NAME", self.vl_model_name)
 
@@ -669,6 +752,12 @@ class PDFConversionService:
                     NormalizedBlock(kind="title", text=heading.group(2).strip(), level=min(len(heading.group(1)), 6))
                 )
                 continue
+            if _is_display_math_line(stripped):
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                blocks.append(NormalizedBlock(kind="equation", text=_strip_math_delimiters(stripped)))
+                continue
             list_match = re.match(r"^([-*+]|\d+[.)])\s+(.+)$", stripped)
             if list_match:
                 flush_paragraph()
@@ -701,18 +790,18 @@ class PDFConversionService:
             if block.kind == "title":
                 document.add_heading(block.text, level=max(1, min(block.level or 1, 4)))
             elif block.kind == "paragraph":
-                document.add_paragraph(block.text)
+                self._add_text_paragraph(document, block.text)
             elif block.kind == "list":
                 for item in block.items:
                     if item.strip():
-                        document.add_paragraph(item.strip(), style="List Bullet")
+                        paragraph = document.add_paragraph(style="List Bullet")
+                        _append_text_with_math(paragraph, item.strip())
             elif block.kind == "table":
                 self._add_table_block(document, block, base_dirs)
             elif block.kind in {"image", "chart"}:
                 self._add_visual_block(document, block, base_dirs)
             elif block.kind == "equation":
-                paragraph = document.add_paragraph()
-                paragraph.add_run(block.text).italic = True
+                self._add_equation_block(document, block.text)
             elif block.kind == "code":
                 if block.caption:
                     document.add_paragraph(block.caption).runs[0].italic = True
@@ -727,6 +816,14 @@ class PDFConversionService:
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         document.save(output_path)
+
+    def _add_text_paragraph(self, document: Document, text: str) -> None:
+        paragraph = document.add_paragraph()
+        _append_text_with_math(paragraph, text)
+
+    def _add_equation_block(self, document: Document, latex: str) -> None:
+        paragraph = document.add_paragraph()
+        _append_math(paragraph, _strip_math_delimiters(latex), display=True)
 
     def _add_table_block(self, document: Document, block: NormalizedBlock, base_dirs: list[Path]) -> None:
         if block.caption:
@@ -744,7 +841,7 @@ class PDFConversionService:
             return
 
         if block.text:
-            document.add_paragraph(block.text)
+            self._add_text_paragraph(document, block.text)
             return
 
         self._add_visual_block(document, block, base_dirs)
@@ -763,7 +860,7 @@ class PDFConversionService:
             document.add_paragraph(f"[Khong tim thay anh: {block.image_path}]")
 
         if block.text:
-            document.add_paragraph(block.text)
+            self._add_text_paragraph(document, block.text)
 
     def _collect_artifacts(self, job_dir: Path, docx_path: Path) -> list[Artifact]:
         candidates: list[Path] = [docx_path]
@@ -911,6 +1008,46 @@ def _env_int(name: str, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _cli_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _env_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _write_mineru_config(output_dir: Path, options: ConversionOptions) -> Path:
+    config: dict[str, Any] = {}
+    configured_path = (os.getenv("MINERU_TOOLS_CONFIG_JSON") or "").strip()
+    candidates = [Path(configured_path)] if configured_path else [Path.home() / "mineru.json"]
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    config = loaded
+                break
+        except Exception:
+            config = {}
+
+    config["latex-delimiter-config"] = _latex_delimiter_config(options.latex_delimiters_type)
+    path = output_dir / "mineru_config.json"
+    path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _latex_delimiter_config(delimiter_type: str) -> dict[str, dict[str, str]]:
+    if delimiter_type == "a":
+        return {
+            "display": {"left": "$$", "right": "$$"},
+            "inline": {"left": "$", "right": "$"},
+        }
+    return {
+        "display": {"left": "\\[", "right": "\\]"},
+        "inline": {"left": "\\(", "right": "\\)"},
+    }
+
+
 def _split_command(raw_command: str) -> list[str]:
     parts = shlex.split(raw_command, posix=os.name != "nt")
     return [part.strip('"') for part in parts if part.strip('"')]
@@ -1016,6 +1153,136 @@ def _clamp_heading_level(value: Any) -> int:
 
 def _block_has_content(block: NormalizedBlock) -> bool:
     return bool(block.text or block.items or block.table_html or block.image_path or block.caption)
+
+
+def _append_text_with_math(paragraph: Any, text: str) -> None:
+    for is_math, value, display in _split_math_segments(text):
+        if not value:
+            continue
+        if is_math:
+            _append_math(paragraph, value, display=display)
+        else:
+            paragraph.add_run(value)
+
+
+def _append_math(paragraph: Any, latex: str, *, display: bool) -> None:
+    latex = _strip_math_delimiters(latex)
+    if not latex:
+        return
+    omml_xml = _latex_to_omml_xml(latex)
+    if omml_xml:
+        try:
+            paragraph._p.append(parse_xml(_ensure_omml_namespaces(omml_xml)))
+            return
+        except Exception:
+            pass
+    paragraph._p.append(_fallback_omml(latex, display=display))
+
+
+def _latex_to_omml_xml(latex: str) -> str | None:
+    try:
+        import latex2mathml.converter
+        import mathml2omml
+    except Exception:
+        return None
+    try:
+        mathml = latex2mathml.converter.convert(latex)
+        convert = getattr(mathml2omml, "convert", None)
+        if convert is None:
+            return None
+        return str(convert(mathml, html.entities.name2codepoint))
+    except Exception:
+        return None
+
+
+def _ensure_omml_namespaces(omml_xml: str) -> str:
+    if "xmlns:m=" in omml_xml:
+        return omml_xml
+    for root in ("m:oMathPara", "m:oMath"):
+        prefix = f"<{root}"
+        if omml_xml.startswith(prefix):
+            return omml_xml.replace(prefix, f"{prefix} {nsdecls('m')}", 1)
+    return omml_xml
+
+
+def _fallback_omml(latex: str, *, display: bool) -> Any:
+    math = OxmlElement("m:oMath")
+    run = OxmlElement("m:r")
+    text = OxmlElement("m:t")
+    text.text = latex
+    run.append(text)
+    math.append(run)
+    if not display:
+        return math
+
+    math_para = OxmlElement("m:oMathPara")
+    math_para.append(math)
+    return math_para
+
+
+def _split_math_segments(text: str) -> list[tuple[bool, str, bool]]:
+    segments: list[tuple[bool, str, bool]] = []
+    index = 0
+    while index < len(text):
+        start = _find_next_math_start(text, index)
+        if start is None:
+            segments.append((False, text[index:], False))
+            break
+        start_index, left, right, display = start
+        if start_index > index:
+            segments.append((False, text[index:start_index], False))
+        end_index = _find_unescaped(text, right, start_index + len(left))
+        if end_index is None:
+            segments.append((False, text[start_index:], False))
+            break
+        latex = text[start_index + len(left) : end_index].strip()
+        segments.append((True, latex, display))
+        index = end_index + len(right)
+    return segments
+
+
+def _find_next_math_start(text: str, start_at: int) -> tuple[int, str, str, bool] | None:
+    candidates: list[tuple[int, str, str, bool]] = []
+    for left, right, display in (("$$", "$$", True), ("\\[", "\\]", True), ("\\(", "\\)", False), ("$", "$", False)):
+        index = _find_unescaped(text, left, start_at)
+        if index is not None:
+            candidates.append((index, left, right, display))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: candidate[0])
+
+
+def _find_unescaped(text: str, needle: str, start_at: int) -> int | None:
+    index = text.find(needle, start_at)
+    while index != -1:
+        if not _is_escaped(text, index):
+            return index
+        index = text.find(needle, index + len(needle))
+    return None
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    slash_count = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        slash_count += 1
+        cursor -= 1
+    return slash_count % 2 == 1
+
+
+def _is_display_math_line(text: str) -> bool:
+    return (
+        (text.startswith("$$") and text.endswith("$$") and len(text) > 4)
+        or (text.startswith("\\[") and text.endswith("\\]") and len(text) > 4)
+    )
+
+
+def _strip_math_delimiters(text: str) -> str:
+    stripped = text.strip()
+    for left, right in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
+        if stripped.startswith(left) and stripped.endswith(right) and len(stripped) > len(left) + len(right):
+            return stripped[len(left) : -len(right)].strip()
+    return stripped
 
 
 def _html_table_to_matrix(html: str) -> list[list[str]]:

@@ -23,6 +23,13 @@ $venvPython = Join-Path $VenvPath "Scripts\python.exe"
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install uv
 & $venvPython -m uv pip install -U "mineru[all]"
+& $venvPython -m uv pip install -U mineru_vl_utils
+$downloadExe = Join-Path (Split-Path $venvPython) "mineru-models-download.exe"
+if (Test-Path $downloadExe) {
+  & $downloadExe -s huggingface -m all
+} else {
+  Write-Warning "Khong tim thay mineru-models-download.exe, bo qua buoc tai model."
+}
 
 Write-Host ""
 Write-Host "MinerU env da san sang."

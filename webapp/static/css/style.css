@@ -43,7 +43,8 @@ a {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -307,6 +308,69 @@ h2 {
   color: var(--ink);
   border-color: var(--line);
   background: var(--surface);
+}
+
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.option-grid label,
+.server-url-field {
+  display: grid;
+  gap: 6px;
+}
+
+.option-grid span,
+.server-url-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.option-grid select,
+.option-grid input,
+.server-url-field input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--ink);
+  background: #fbfcfb;
+}
+
+.toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.toggle-grid label {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfb;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toggle-grid input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+}
+
+.server-url-field {
+  margin-top: 12px;
 }
 
 .ghost-btn.compact {
@@ -573,6 +637,11 @@ h2 {
   }
 
   .runtime-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .option-grid,
+  .toggle-grid {
     grid-template-columns: 1fr;
   }
 }

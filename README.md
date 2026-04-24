@@ -1,6 +1,6 @@
 # PDF to Word Studio
 
-Flask webapp chuyen PDF thanh file Word editable bang MinerU. App giu output phu cua MinerU nhu Markdown, JSON va `layout.pdf` de doi chieu khi can debug.
+Flask webapp chuyen PDF thanh file Word editable bang MinerU. App giu output phu cua MinerU nhu Markdown, JSON va `layout.pdf` de doi chieu khi can debug. Giao dien co cac tuy chon tuong ung MinerU CLI: backend, OCR/txt/auto, ngon ngu OCR, formula/table, khoang trang, URL engine remote va kieu delimiter LaTeX.
 
 ## Chay webapp
 
@@ -58,3 +58,14 @@ $env:MINERU_COMMAND = "D:\Programs\MinerU\.venv-mineru\Scripts\mineru.exe"
 - `MINERU_TIMEOUT_SECONDS`: mac dinh `3600`.
 
 Trong che do `auto`, app uu tien `vlm-http-client` khi co `MINERU_API_URL`, dung `hybrid-auto-engine` khi env MinerU co CUDA, va fallback ve `pipeline` neu chi co CPU.
+
+Cac tuy chon theo tung job tren giao dien se duoc chuyen thanh tham so MinerU:
+
+- `backend` -> `-b`.
+- `auto`, `ocr`, `txt` -> `-m`; chon `ocr` de ep OCR nhu Gradio goc.
+- `OCR language` -> `-l`; chon `latin` cho tai lieu tieng Viet/Latin.
+- `formula/table` -> `-f` va `-t`.
+- `Tu trang`/`Den trang` -> `-s` va `-e` theo index 0-based cua MinerU.
+- `LaTeX delimiter` ghi vao `MINERU_TOOLS_CONFIG_JSON`; mac dinh dung `\(...\)` va `\[...\]` giong Space Hugging Face.
+
+DOCX renderer se nhan dien cong thuc Markdown dang `$...$`, `$$...$$`, `\(...\)` va `\[...\]`. Neu cai du `latex2mathml` + `mathml2omml`, cong thuc duoc ghi thanh OMML editable trong Word; neu converter loi, app van tao Word equation object voi noi dung LaTeX de khong mat cong thuc.

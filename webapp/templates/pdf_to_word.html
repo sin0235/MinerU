@@ -37,6 +37,69 @@
           </button>
           <button class="ghost-btn hidden" id="clearBtn" type="button">Xóa</button>
         </div>
+
+        <div class="option-grid">
+          <label>
+            <span>Backend</span>
+            <select id="backendInput" name="backend">
+              {% for backend in converter_options.backends %}
+                <option value="{{ backend }}" {{ 'selected' if backend == converter_options.default.backend else '' }}>{{ backend }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Phương thức</span>
+            <select id="parseMethodInput" name="parse_method">
+              {% for method in converter_options.parse_methods %}
+                <option value="{{ method }}" {{ 'selected' if method == converter_options.default.parse_method else '' }}>{{ method }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>OCR language</span>
+            <select id="languageInput" name="language">
+              {% for value, label in converter_options.languages %}
+                <option value="{{ value }}" {{ 'selected' if value == converter_options.default.language else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>LaTeX delimiter</span>
+            <select id="latexDelimitersInput" name="latex_delimiters_type">
+              {% for value, label in converter_options.latex_delimiters %}
+                <option value="{{ value }}" {{ 'selected' if value == converter_options.default.latex_delimiters_type else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Từ trang</span>
+            <input id="startPageInput" name="start_page" type="number" min="1" max="99999" value="1" />
+          </label>
+          <label>
+            <span>Đến trang</span>
+            <input id="endPageInput" name="end_page" type="number" min="1" max="99999" placeholder="Tất cả" />
+          </label>
+        </div>
+
+        <div class="toggle-grid">
+          <label>
+            <input id="formulaInput" name="formula_enable" type="checkbox" checked />
+            <span>Nhận diện công thức</span>
+          </label>
+          <label>
+            <input id="tableInput" name="table_enable" type="checkbox" checked />
+            <span>Nhận diện bảng</span>
+          </label>
+          <label>
+            <input id="forceOcrInput" type="checkbox" />
+            <span>Ép OCR</span>
+          </label>
+        </div>
+
+        <label class="server-url-field">
+          <span>OpenAI-compatible URL</span>
+          <input id="serverUrlInput" name="server_url" type="url" placeholder="Chỉ dùng với http-client backend" />
+        </label>
       </form>
 
       <div class="runtime-grid">
@@ -119,6 +182,8 @@
 
   const form = document.getElementById('convertForm');
   const pdfInput = document.getElementById('pdfInput');
+  const parseMethodInput = document.getElementById('parseMethodInput');
+  const forceOcrInput = document.getElementById('forceOcrInput');
   const dropZone = document.getElementById('dropZone');
   const selectedFile = document.getElementById('selectedFile');
   const convertBtn = document.getElementById('convertBtn');
@@ -311,6 +376,16 @@
   }
 
   pdfInput.addEventListener('change', syncSelectedFile);
+  forceOcrInput.addEventListener('change', function () {
+    if (forceOcrInput.checked) {
+      parseMethodInput.value = 'ocr';
+    } else if (parseMethodInput.value === 'ocr') {
+      parseMethodInput.value = 'auto';
+    }
+  });
+  parseMethodInput.addEventListener('change', function () {
+    forceOcrInput.checked = parseMethodInput.value === 'ocr';
+  });
   clearBtn.addEventListener('click', resetForm);
   refreshHistoryBtn.addEventListener('click', function () {
     refreshHistory().catch(function (error) {
@@ -343,6 +418,15 @@
     }
     const formData = new FormData();
     formData.set('pdf', file);
+    formData.set('backend', document.getElementById('backendInput').value);
+    formData.set('parse_method', parseMethodInput.value);
+    formData.set('language', document.getElementById('languageInput').value);
+    formData.set('latex_delimiters_type', document.getElementById('latexDelimitersInput').value);
+    formData.set('formula_enable', document.getElementById('formulaInput').checked ? 'true' : 'false');
+    formData.set('table_enable', document.getElementById('tableInput').checked ? 'true' : 'false');
+    formData.set('start_page', document.getElementById('startPageInput').value || '1');
+    formData.set('end_page', document.getElementById('endPageInput').value || '');
+    formData.set('server_url', document.getElementById('serverUrlInput').value.trim());
     convertBtn.disabled = true;
     showRunning('Đang đưa file vào hàng đợi...', 'queued');
     try {

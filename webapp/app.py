@@ -9,9 +9,25 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, ur
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 
 try:
-    from webapp.pdf_service import ConversionJobManager, PDFConversionService
+    from webapp.pdf_service import (
+        ALLOWED_BACKENDS,
+        ALLOWED_LANGUAGES,
+        ALLOWED_LATEX_DELIMITER_TYPES,
+        ALLOWED_PARSE_METHODS,
+        ConversionJobManager,
+        ConversionOptions,
+        PDFConversionService,
+    )
 except ImportError:  # pragma: no cover
-    from pdf_service import ConversionJobManager, PDFConversionService
+    from pdf_service import (
+        ALLOWED_BACKENDS,
+        ALLOWED_LANGUAGES,
+        ALLOWED_LATEX_DELIMITER_TYPES,
+        ALLOWED_PARSE_METHODS,
+        ConversionJobManager,
+        ConversionOptions,
+        PDFConversionService,
+    )
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,11 +50,91 @@ def _base_context(active: str = "converter") -> dict:
         "max_upload_mb": converter.max_upload_mb,
         "readiness": converter.readiness().to_payload(),
         "recent_results": [snapshot["result"] for snapshot in job_manager.recent_results()],
+        "converter_options": _converter_options_payload(),
     }
 
 
 def _is_api_request() -> bool:
     return request.path.startswith("/api/")
+
+
+def _converter_options_payload() -> dict:
+    return {
+        "default": ConversionOptions(backend=converter.resolve_backend()).to_payload(),
+        "backends": ["auto", "pipeline", "hybrid-auto-engine", "vlm-auto-engine", "hybrid-http-client", "vlm-http-client"],
+        "parse_methods": ["auto", "ocr", "txt"],
+        "languages": [
+            ("ch", "Chinese + English"),
+            ("en", "English"),
+            ("latin", "Latin/Vietnamese"),
+            ("ch_lite", "Chinese Lite"),
+            ("ch_server", "Chinese Server"),
+            ("korean", "Korean"),
+            ("japan", "Japanese"),
+            ("chinese_cht", "Traditional Chinese"),
+            ("arabic", "Arabic"),
+            ("cyrillic", "Cyrillic"),
+            ("east_slavic", "East Slavic"),
+            ("devanagari", "Devanagari"),
+            ("ta", "Tamil"),
+            ("te", "Telugu"),
+            ("ka", "Kannada"),
+            ("th", "Thai"),
+            ("el", "Greek"),
+        ],
+        "latex_delimiters": [
+            ("b", r"\(...\) / \[...\]"),
+            ("a", "$...$ / $$...$$"),
+            ("all", "All in DOCX parser"),
+        ],
+    }
+
+
+def _conversion_options_from_request() -> ConversionOptions:
+    form = request.form
+    backend = _choice("backend", ALLOWED_BACKENDS, "auto")
+    parse_method = _choice("parse_method", ALLOWED_PARSE_METHODS, "auto")
+    language = _choice("language", ALLOWED_LANGUAGES, "ch")
+    latex_delimiters_type = _choice("latex_delimiters_type", ALLOWED_LATEX_DELIMITER_TYPES, "b")
+    start_page_ui = _optional_int(form.get("start_page"), default=1, minimum=1, maximum=99999)
+    end_page_ui = _optional_int(form.get("end_page"), default=None, minimum=1, maximum=99999)
+    start_page = max(0, start_page_ui - 1)
+    end_page = end_page_ui - 1 if end_page_ui is not None else None
+    if end_page is not None and end_page < start_page:
+        raise ValueError("Trang ket thuc phai lon hon hoac bang trang bat dau.")
+    return ConversionOptions(
+        backend=backend,
+        parse_method=parse_method,
+        language=language,
+        formula_enable=_form_bool("formula_enable", default=True),
+        table_enable=_form_bool("table_enable", default=True),
+        start_page=start_page,
+        end_page=end_page,
+        server_url=(form.get("server_url") or "").strip(),
+        latex_delimiters_type=latex_delimiters_type,
+    )
+
+
+def _choice(name: str, allowed: set[str], default: str) -> str:
+    value = (request.form.get(name) or default).strip()
+    return value if value in allowed else default
+
+
+def _form_bool(name: str, *, default: bool) -> bool:
+    raw = request.form.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _optional_int(raw: str | None, *, default: int | None, minimum: int, maximum: int) -> int | None:
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("Gia tri trang phai la so nguyen.") from exc
+    return max(minimum, min(maximum, value))
 
 
 def _artifact_payload_with_urls(job_id: str, result: dict) -> dict:
@@ -97,7 +193,8 @@ def api_status():
 def api_convert():
     upload = request.files.get("pdf")
     try:
-        submission = converter.create_submission(upload)
+        options = _conversion_options_from_request()
+        submission = converter.create_submission_with_options(upload, options)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
