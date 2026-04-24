@@ -1,0 +1,1815 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="tts-workbench">
+  <div class="tts-workbench-head">
+    <div class="tts-workbench-copy">
+      <h1>Speech Synthesis</h1>
+    </div>
+
+    <div class="tts-workbench-pills">
+      <span class="tts-top-pill {% if engine_card.ready %}tts-top-pill-ready{% else %}tts-top-pill-warning{% endif %}">
+        {% if engine_card.ready %}
+        <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+        Sẵn sàng
+        {% else %}
+        <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 9v2m0 4h.01M12 3a9 9 0 100 18 9 9 0 000-18z"/></svg>
+        Chưa sẵn sàng
+        {% endif %}
+      </span>
+      <span class="tts-top-pill tts-top-pill-device">
+        <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/></svg>
+        {{ status_summary.device_label }}
+      </span>
+    </div>
+  </div>
+
+  <form id="ttsForm" class="tts-board" enctype="multipart/form-data">
+    <input type="hidden" name="engine" value="{{ engine_card.id }}" />
+    <input type="hidden" name="model_key" value="{{ model_selection.default_key if model_selection else 'default' }}" />
+    <input type="hidden" name="custom_model" value="" />
+
+    <section class="tts-stage">
+      <div class="tts-editor-card">
+        <div class="tts-editor-shell">
+          <textarea
+            id="textInput"
+            name="text"
+            rows="5"
+            maxlength="{{ text_input_limit }}"
+            class="tts-editor-input"
+            placeholder="Nhập nội dung tiếng Việt cần chuyển thành giọng nói..."
+          ></textarea>
+        </div>
+
+        <div class="tts-editor-foot">
+          <div class="tts-editor-tags">
+            <button type="button" class="tts-language-pill tts-language-picker">
+              <span class="tts-flag-dot"><svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="12" fill="#da251d"/><polygon points="12,5 13.8,10.5 19.6,10.5 14.9,13.8 16.7,19.3 12,16 7.3,19.3 9.1,13.8 4.4,10.5 10.2,10.5" fill="#ffcd00"/></svg></span>
+              <span>Tiếng Việt</span>
+            </button>
+            <button class="tts-ghost-btn tts-autoplay-btn" type="button" id="autoPlayBtn" aria-pressed="true" title="Tự phát audio sau khi sinh xong">
+              <svg class="autoplay-speaker" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <path class="wave wave-1" d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                <path class="wave wave-2" d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                <line class="mute-line" x1="23" y1="9" x2="17" y2="15"/>
+                <line class="mute-line" x1="17" y1="9" x2="23" y2="15"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="tts-editor-actions">
+            <div class="tts-editor-meta">
+              <span id="textCount" class="tts-editor-count">0 / {{ text_input_limit }}</span>
+            </div>
+            <button class="tts-submit-btn" type="submit" id="generateBtn" {% if not engine_card.ready %}disabled{% endif %}>
+              <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Chuyển Đổi
+            </button>
+          </div>
+        </div>
+        <div class="tts-text-progress" id="textProgressWrap">
+          <div class="tts-text-progress-bar" id="textProgressBar"></div>
+        </div>
+      </div>
+
+      <div class="tts-output-card">
+        <div id="resultState" class="tts-output-empty">
+          Chưa có audio.
+        </div>
+
+        <div id="resultCard" class="tts-output-ready hidden">
+          <audio id="resultPlayer" class="hidden"></audio>
+
+          <div class="tts-output-topline">
+            <div>
+              <div class="result-engine" id="resultEngineLabel"></div>
+              <div class="result-file" id="resultFilename"></div>
+            </div>
+            <span class="status-pill" id="resultRate"></span>
+          </div>
+
+          <div class="tts-player-row">
+            <button type="button" class="tts-player-button" id="resultPlayButton">
+              <svg id="resultPlayIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.86-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" />
+              </svg>
+            </button>
+
+            <div class="tts-player-track-wrap">
+              <input id="resultSeekRange" class="tts-player-track" type="range" min="0" max="1000" value="0" />
+            </div>
+
+            <div class="tts-player-time">
+              <span id="resultCurrentTime">00:00</span>
+              <span>/</span>
+              <span id="resultDuration">00:00</span>
+            </div>
+
+            <a class="tts-player-icon" id="downloadLink" href="#" download aria-label="Tải WAV">
+              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v12m0 0l4-4m-4 4l-4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+              </svg>
+            </a>
+
+            <button class="tts-player-icon" type="button" onclick="copyAudioUrl()" aria-label="Copy link output">
+              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2M10 18h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="result-stats tts-output-stats" id="resultStats"></div>
+        </div>
+      </div>
+
+    </section>
+
+    <aside class="tts-sidebar">
+      <div class="tts-sidebar-frame">
+        <div class="tts-sidebar-tabs">
+          <button type="button" class="tts-sidebar-tab active" id="settingsTabBtn">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <circle cx="12" cy="12" r="3" stroke-width="2" />
+            </svg>
+            Cài Đặt
+          </button>
+          <button type="button" class="tts-sidebar-tab" id="historyTabBtn">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Lịch Sử
+          </button>
+        </div>
+
+        <div class="tts-sidebar-panel active" id="settingsPanel">
+          <div class="tts-sidebar-scroll">
+        <section class="tts-side-card">
+          <div class="tts-side-card-title">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m-4 0h8m-4-8a3 3 0 100-6 3 3 0 000 6z"/></svg>
+            Giọng Nói
+          </div>
+
+          {% if engine_card.id == "gwen" and preset_voices_payload %}
+          <div id="presetVoiceSection" class="preset-voice-section preset-voice-section-compact">
+            <div class="voice-preview-card" id="voicePreviewCard">
+              <div class="voice-preview-avatar vl-color-0" id="voicePreviewAvatar"><div class="sound-wave"><span></span><span></span><span></span><span></span><span></span></div></div>
+              <div class="voice-preview-info">
+                <div class="voice-preview-name" id="voicePreviewName">{{ preset_voices_payload[0].name }}</div>
+                <div class="voice-preview-style" id="voicePreviewStyle">{{ preset_voices_payload[0].style }}</div>
+              </div>
+            </div>
+
+            <select id="presetVoiceSelect" name="preset_voice_id" class="form-control tts-side-input preset-voice-select">
+              {% for voice in preset_voices_payload %}
+              <option value="{{ voice.id }}">{{ voice.name }}{% if voice.style %} · {{ voice.style }}{% endif %}</option>
+              {% endfor %}
+            </select>
+
+            <div class="preset-voice-detail preset-voice-detail-compact">
+              <audio id="presetVoicePlayer" controls class="player compact-player"></audio>
+            </div>
+          </div>
+
+          <a href="{{ url_for('voices_page') }}" class="voice-browse-link">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            Khám phá {{ preset_voices_payload|length }} giọng nói + Cloning voices
+            <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+          </a>
+
+          <input type="hidden" id="referenceText" name="reference_text" value="" />
+          <input type="hidden" id="referenceAudio" name="reference_audio" value="" />
+          {% endif %}
+        </section>
+
+        {% if engine_card.id == "gwen" and gwen_settings_payload %}
+        <div class="tts-advanced-actions-row">
+          <section class="advanced-settings-card advanced-modal-card" id="advancedGwenSettings">
+            <button class="advanced-settings-summary advanced-modal-trigger" type="button" id="advancedGwenSettingsToggle" data-modal-target="advancedGwenSettingsModal" aria-haspopup="dialog" aria-expanded="false" aria-controls="advancedGwenSettingsModal">
+              <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+              </svg>
+              Nâng cao
+            </button>
+          </section>
+
+          <section class="advanced-settings-card advanced-modal-card" id="pronunciationSettings">
+            <button class="advanced-settings-summary advanced-modal-trigger" type="button" id="pronunciationSettingsToggle" data-modal-target="pronunciationSettingsModal" aria-haspopup="dialog" aria-expanded="false" aria-controls="pronunciationSettingsModal">
+              <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+              </svg>
+              Phát âm
+            </button>
+          </section>
+        </div>
+
+        {% endif %}
+
+          </div>
+
+          {% if engine_card.id == "gwen" and gwen_settings_payload %}
+          <div class="studio-modal hidden" id="advancedGwenSettingsModal" aria-hidden="true">
+            <div class="studio-modal-backdrop" data-modal-close="true"></div>
+            <div class="studio-modal-dialog" role="dialog" aria-labelledby="advancedGwenSettingsModalTitle" tabindex="-1">
+              <div class="studio-modal-header">
+                <div>
+                  <h2 class="studio-modal-title" id="advancedGwenSettingsModalTitle">
+                    <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+                    Cài đặt nâng cao
+                  </h2>
+                  <p class="studio-modal-subtitle">Tinh chỉnh generation của Gwen-TTS trước khi synthesize.</p>
+                </div>
+                <button type="button" class="studio-modal-close" data-modal-close="true" aria-label="Đóng popup"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              </div>
+
+              <div class="studio-modal-panel" id="advancedGwenSettingsBody">
+                <div class="advanced-settings-grid">
+                  <div class="control-card">
+                    <label for="speedRange"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>Tốc độ</label>
+                    <input id="speedRange" name="speed" type="range" min="{{ gwen_settings_payload.ranges.speed.min }}" max="{{ gwen_settings_payload.ranges.speed.max }}" step="{{ gwen_settings_payload.ranges.speed.step }}" value="{{ gwen_settings_payload.defaults.speed }}" />
+                    <div class="range-meta"><span>Chậm</span><strong id="speedValue">{{ "%.2f"|format(gwen_settings_payload.defaults.speed) }}x</strong><span>Nhanh</span></div>
+                  </div>
+
+                  <div class="control-card">
+                    <label for="gwenTemperature"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 14.76V3.5a2.5 2.5 0 00-5 0v11.26a4.5 4.5 0 105 0z"/></svg>Temperature</label>
+                    <input id="gwenTemperature" name="gwen_temperature" type="range" min="{{ gwen_settings_payload.ranges.temperature.min }}" max="{{ gwen_settings_payload.ranges.temperature.max }}" step="{{ gwen_settings_payload.ranges.temperature.step }}" value="{{ gwen_settings_payload.defaults.temperature }}" />
+                    <div class="range-meta"><span>Ổn định</span><strong id="gwenTemperatureValue">{{ "%.1f"|format(gwen_settings_payload.defaults.temperature) }}</strong><span>Sáng tạo</span></div>
+                  </div>
+
+                  <div class="control-card">
+                    <label for="gwenTopP"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"/></svg>Top P</label>
+                    <input id="gwenTopP" name="gwen_top_p" type="range" min="{{ gwen_settings_payload.ranges.topP.min }}" max="{{ gwen_settings_payload.ranges.topP.max }}" step="{{ gwen_settings_payload.ranges.topP.step }}" value="{{ gwen_settings_payload.defaults.topP }}" />
+                    <div class="range-meta"><span>Tập trung</span><strong id="gwenTopPValue">{{ "%.2f"|format(gwen_settings_payload.defaults.topP) }}</strong><span>Đa dạng</span></div>
+                  </div>
+
+                  <div class="control-card">
+                    <label for="gwenTopK"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4"/></svg>Top K</label>
+                    <input id="gwenTopK" name="gwen_top_k" type="range" min="{{ gwen_settings_payload.ranges.topK.min }}" max="{{ gwen_settings_payload.ranges.topK.max }}" step="{{ gwen_settings_payload.ranges.topK.step }}" value="{{ gwen_settings_payload.defaults.topK }}" />
+                    <div class="range-meta"><span>1</span><strong id="gwenTopKValue">{{ gwen_settings_payload.defaults.topK }}</strong><span>100</span></div>
+                  </div>
+
+                  <div class="control-card">
+                    <label for="gwenRepetitionPenalty"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Repetition Penalty</label>
+                    <input id="gwenRepetitionPenalty" name="gwen_repetition_penalty" type="range" min="{{ gwen_settings_payload.ranges.repetitionPenalty.min }}" max="{{ gwen_settings_payload.ranges.repetitionPenalty.max }}" step="{{ gwen_settings_payload.ranges.repetitionPenalty.step }}" value="{{ gwen_settings_payload.defaults.repetitionPenalty }}" />
+                    <div class="range-meta"><span>Cho phép lặp</span><strong id="gwenRepetitionPenaltyValue">{{ "%.1f"|format(gwen_settings_payload.defaults.repetitionPenalty) }}</strong><span>Ngăn lặp</span></div>
+                  </div>
+
+                  <div class="control-card">
+                    <label for="gwenMaxNewTokens"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>Max New Tokens</label>
+                    <input id="gwenMaxNewTokens" name="gwen_max_new_tokens" type="range" min="{{ gwen_settings_payload.ranges.maxNewTokens.min }}" max="{{ gwen_settings_payload.ranges.maxNewTokens.max }}" step="{{ gwen_settings_payload.ranges.maxNewTokens.step }}" value="{{ gwen_settings_payload.defaults.maxNewTokens }}" />
+                    <div class="range-meta"><span>512</span><strong id="gwenMaxNewTokensValue">{{ gwen_settings_payload.defaults.maxNewTokens }}</strong><span>8192</span></div>
+                  </div>
+                </div>
+
+                <div class="advanced-subsection">
+                  <div class="advanced-subsection-title"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>Code Predictor</div>
+                  <label class="toggle-row compact-toggle-row">
+                    <input type="checkbox" name="gwen_subtalker_do_sample" id="gwenSubtalkerDoSample" checked />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>Do Sample</span>
+                  </label>
+
+                  <div class="advanced-settings-grid">
+                    <div class="control-card">
+                      <label for="gwenSubtalkerTemperature"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 14.76V3.5a2.5 2.5 0 00-5 0v11.26a4.5 4.5 0 105 0z"/></svg>CP Temperature</label>
+                      <input id="gwenSubtalkerTemperature" name="gwen_subtalker_temperature" type="range" min="{{ gwen_settings_payload.ranges.codePredictorTemperature.min }}" max="{{ gwen_settings_payload.ranges.codePredictorTemperature.max }}" step="{{ gwen_settings_payload.ranges.codePredictorTemperature.step }}" value="{{ gwen_settings_payload.defaults.codePredictorTemperature }}" />
+                      <div class="range-meta"><span>Ổn định</span><strong id="gwenSubtalkerTemperatureValue">{{ "%.1f"|format(gwen_settings_payload.defaults.codePredictorTemperature) }}</strong><span>Sáng tạo</span></div>
+                    </div>
+
+                    <div class="control-card">
+                      <label for="gwenSubtalkerTopK"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4"/></svg>CP Top K</label>
+                      <input id="gwenSubtalkerTopK" name="gwen_subtalker_top_k" type="range" min="{{ gwen_settings_payload.ranges.codePredictorTopK.min }}" max="{{ gwen_settings_payload.ranges.codePredictorTopK.max }}" step="{{ gwen_settings_payload.ranges.codePredictorTopK.step }}" value="{{ gwen_settings_payload.defaults.codePredictorTopK }}" />
+                      <div class="range-meta"><span>1</span><strong id="gwenSubtalkerTopKValue">{{ gwen_settings_payload.defaults.codePredictorTopK }}</strong><span>100</span></div>
+                    </div>
+
+                    <div class="control-card">
+                      <label for="gwenSubtalkerTopP"><svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"/></svg>CP Top P</label>
+                      <input id="gwenSubtalkerTopP" name="gwen_subtalker_top_p" type="range" min="{{ gwen_settings_payload.ranges.codePredictorTopP.min }}" max="{{ gwen_settings_payload.ranges.codePredictorTopP.max }}" step="{{ gwen_settings_payload.ranges.codePredictorTopP.step }}" value="{{ gwen_settings_payload.defaults.codePredictorTopP }}" />
+                      <div class="range-meta"><span>Tập trung</span><strong id="gwenSubtalkerTopPValue">{{ "%.2f"|format(gwen_settings_payload.defaults.codePredictorTopP) }}</strong><span>Đa dạng</span></div>
+                    </div>
+                  </div>
+
+                  <div class="sampling-method-line">
+                    <span>Sampling Method</span>
+                    <strong id="gwenSamplingMethodValue">{{ gwen_settings_payload.defaults.codePredictorSamplingMethod }}</strong>
+                    <input type="hidden" id="gwenSamplingMethod" name="gwen_subtalker_sampling_method" value="{{ gwen_settings_payload.defaults.codePredictorSamplingMethod }}" />
+                  </div>
+                </div>
+
+                <button class="btn btn-outline" type="button" id="resetGwenSettingsBtn"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Reset về mặc định</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="studio-modal hidden" id="pronunciationSettingsModal" aria-hidden="true">
+            <div class="studio-modal-backdrop" data-modal-close="true"></div>
+            <div class="studio-modal-dialog" role="dialog" aria-labelledby="pronunciationSettingsModalTitle" tabindex="-1">
+              <div class="studio-modal-header">
+                <div>
+                  <h2 class="studio-modal-title" id="pronunciationSettingsModalTitle">
+                    <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/></svg>
+                    Cài đặt phát âm
+                  </h2>
+                  <p class="studio-modal-subtitle">Thêm các cặp thay chữ để model đọc đúng hơn trước khi synthesize.</p>
+                </div>
+                <button type="button" class="studio-modal-close" data-modal-close="true" aria-label="Đóng popup"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              </div>
+
+              <div class="studio-modal-panel" id="pronunciationSettingsBody">
+                <div id="pronunciationRules" class="pronunciation-rule-list"></div>
+
+                <div class="form-actions pronunciation-actions">
+                  <button class="btn btn-outline" type="button" id="addPronunciationRuleBtn"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>Thêm cặp đọc</button>
+                  <button class="btn btn-outline" type="button" id="uploadPronunciationBtn"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>Upload file</button>
+                  <button class="btn btn-outline" type="button" id="downloadPronunciationBtn"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>Tải xuống</button>
+                  <button class="btn btn-outline" type="button" id="clearPronunciationRulesBtn"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Xóa hết</button>
+                  <input type="file" id="pronunciationFileInput" accept=".json,.txt" class="hidden" />
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+        </div>
+
+        <div class="tts-sidebar-panel" id="historyPanel">
+          <div class="tts-sidebar-scroll tts-history-scroll">
+            <section class="tts-side-card tts-history-toolbar">
+              <div class="tts-side-card-title">Lịch Sử Phiên Hiện Tại</div>
+              <label class="tts-history-search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" stroke-width="2"></circle>
+                  <path d="m20 20-3.5-3.5" stroke-width="2" stroke-linecap="round"></path>
+                </svg>
+                <input id="historySearchInput" type="search" placeholder="Tìm kiếm audio..." />
+              </label>
+            </section>
+
+            <section class="tts-side-card tts-history-board">
+              <div id="historyList" class="history-list">
+                <div class="empty-state small">Chưa có lịch sử.</div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </form>
+</div>
+
+<script>
+  let latestAudioUrl = '';
+  let latestAudioName = '';
+  const ENGINE_ID = {{ engine_card.id|tojson }};
+  const MODEL_SELECTION = {{ model_selection|tojson }};
+  const VOICE_PRESETS = {{ preset_voices_payload|tojson }};
+  const GWEN_SETTINGS = {{ gwen_settings_payload|tojson }};
+  const MAX_UPLOAD_MB = {{ max_upload_mb|tojson }};
+  const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+  const textInput = document.getElementById('textInput');
+  const textCount = document.getElementById('textCount');
+  const speedRange = document.getElementById('speedRange');
+  const speedValue = document.getElementById('speedValue');
+  const referenceAudio = document.getElementById('referenceAudio');
+  const referenceText = document.getElementById('referenceText');
+  const referenceTranscribeStatus = document.getElementById('referenceTranscribeStatus');
+  const referenceTranscribeStatusLabel = document.getElementById('referenceTranscribeStatusLabel');
+  const uploadFileLabel = document.getElementById('uploadFileLabel');
+  const textProgressBar = document.getElementById('textProgressBar');
+  const presetVoiceSection = document.getElementById('presetVoiceSection');
+  const presetVoiceSelect = document.getElementById('presetVoiceSelect');
+  const presetVoicePlayer = document.getElementById('presetVoicePlayer');
+  const customReferenceGroup = document.getElementById('customReferenceGroup');
+  const gwenTemperature = document.getElementById('gwenTemperature');
+  const gwenTemperatureValue = document.getElementById('gwenTemperatureValue');
+  const gwenTopP = document.getElementById('gwenTopP');
+  const gwenTopPValue = document.getElementById('gwenTopPValue');
+  const gwenTopK = document.getElementById('gwenTopK');
+  const gwenTopKValue = document.getElementById('gwenTopKValue');
+  const gwenRepetitionPenalty = document.getElementById('gwenRepetitionPenalty');
+  const gwenRepetitionPenaltyValue = document.getElementById('gwenRepetitionPenaltyValue');
+  const gwenMaxNewTokens = document.getElementById('gwenMaxNewTokens');
+  const gwenMaxNewTokensValue = document.getElementById('gwenMaxNewTokensValue');
+  const gwenSubtalkerDoSample = document.getElementById('gwenSubtalkerDoSample');
+  const gwenSubtalkerTemperature = document.getElementById('gwenSubtalkerTemperature');
+  const gwenSubtalkerTemperatureValue = document.getElementById('gwenSubtalkerTemperatureValue');
+  const gwenSubtalkerTopK = document.getElementById('gwenSubtalkerTopK');
+  const gwenSubtalkerTopKValue = document.getElementById('gwenSubtalkerTopKValue');
+  const gwenSubtalkerTopP = document.getElementById('gwenSubtalkerTopP');
+  const gwenSubtalkerTopPValue = document.getElementById('gwenSubtalkerTopPValue');
+  const gwenSamplingMethod = document.getElementById('gwenSamplingMethod');
+  const gwenSamplingMethodValue = document.getElementById('gwenSamplingMethodValue');
+  const advancedGwenSettingsToggle = document.getElementById('advancedGwenSettingsToggle');
+  const advancedGwenSettingsModal = document.getElementById('advancedGwenSettingsModal');
+  const pronunciationSettingsToggle = document.getElementById('pronunciationSettingsToggle');
+  const pronunciationSettingsModal = document.getElementById('pronunciationSettingsModal');
+  const resetGwenSettingsBtn = document.getElementById('resetGwenSettingsBtn');
+  const pronunciationRules = document.getElementById('pronunciationRules');
+  const addPronunciationRuleBtn = document.getElementById('addPronunciationRuleBtn');
+  const uploadPronunciationBtn = document.getElementById('uploadPronunciationBtn');
+  const downloadPronunciationBtn = document.getElementById('downloadPronunciationBtn');
+  const pronunciationFileInput = document.getElementById('pronunciationFileInput');
+  const clearPronunciationRulesBtn = document.getElementById('clearPronunciationRulesBtn');
+  const settingsTabBtn = document.getElementById('settingsTabBtn');
+  const historyTabBtn = document.getElementById('historyTabBtn');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const historyPanel = document.getElementById('historyPanel');
+  const ttsSidebar = document.querySelector('.tts-sidebar');
+  const ttsSidebarFrame = document.querySelector('.tts-sidebar-frame');
+  const resultPlayer = document.getElementById('resultPlayer');
+  const resultPlayButton = document.getElementById('resultPlayButton');
+  const resultPlayIcon = document.getElementById('resultPlayIcon');
+  const resultSeekRange = document.getElementById('resultSeekRange');
+  const resultCurrentTime = document.getElementById('resultCurrentTime');
+  const resultDuration = document.getElementById('resultDuration');
+  const autoPlayBtn = document.getElementById('autoPlayBtn');
+  const historySearchInput = document.getElementById('historySearchInput');
+  const historyList = document.getElementById('historyList');
+  const themedSelectInstances = new Map();
+  let activeRequestController = null;
+  let activeTranscriptionController = null;
+  let activeStudioModal = null;
+  let lastSubmissionText = '';
+  let saveSettingsTimer = null;
+  let saveSettingsInFlight = null;
+  let gwenVoiceMode = ENGINE_ID === 'gwen' && VOICE_PRESETS.length ? 'preset' : 'custom';
+
+  function closeThemedSelectMenus(except = null) {
+    themedSelectInstances.forEach((instance) => {
+      if (instance !== except) {
+        instance.close();
+      }
+    });
+  }
+
+  function syncThemedSelect(selectElement) {
+    const instance = themedSelectInstances.get(selectElement);
+    if (instance) {
+      instance.sync();
+    }
+  }
+
+  function mountThemedSelect(selectElement) {
+    if (!selectElement || themedSelectInstances.has(selectElement)) {
+      return themedSelectInstances.get(selectElement) || null;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'themed-select';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'themed-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const menu = document.createElement('div');
+    menu.className = 'themed-select-menu';
+    menu.setAttribute('role', 'listbox');
+
+    selectElement.classList.add('themed-select-native');
+    selectElement.setAttribute('tabindex', '-1');
+    selectElement.setAttribute('aria-hidden', 'true');
+    selectElement.parentNode.insertBefore(wrapper, selectElement);
+    wrapper.appendChild(selectElement);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+
+    const instance = {
+      wrapper,
+      trigger,
+      menu,
+      select: selectElement,
+      close() {
+        wrapper.classList.remove('is-open');
+        trigger.setAttribute('aria-expanded', 'false');
+      },
+      open() {
+        if (selectElement.disabled || wrapper.classList.contains('is-open')) {
+          return;
+        }
+        closeThemedSelectMenus(instance);
+        wrapper.classList.add('is-open');
+        trigger.setAttribute('aria-expanded', 'true');
+      },
+      sync() {
+        const selectedOption = selectElement.options[selectElement.selectedIndex] || selectElement.options[0] || null;
+        trigger.textContent = selectedOption ? selectedOption.textContent : 'Chọn...';
+        trigger.title = selectedOption ? selectedOption.textContent : '';
+        trigger.disabled = !!selectElement.disabled;
+        wrapper.classList.toggle('is-disabled', !!selectElement.disabled);
+        menu.innerHTML = '';
+
+        Array.from(selectElement.options).forEach((option) => {
+          const optionButton = document.createElement('button');
+          optionButton.type = 'button';
+          optionButton.className = 'themed-select-option';
+          optionButton.textContent = option.textContent;
+          optionButton.dataset.value = option.value;
+          optionButton.setAttribute('role', 'option');
+          optionButton.setAttribute('aria-selected', option.selected ? 'true' : 'false');
+          optionButton.disabled = !!option.disabled;
+          if (option.selected) {
+            optionButton.classList.add('is-selected');
+          }
+          menu.appendChild(optionButton);
+        });
+
+        if (wrapper.classList.contains('is-open')) {
+          const activeButton = menu.querySelector('.themed-select-option.is-selected') || menu.querySelector('.themed-select-option:not(:disabled)');
+          if (activeButton) {
+            window.requestAnimationFrame(() => {
+              activeButton.scrollIntoView({ block: 'nearest' });
+            });
+          }
+        }
+      },
+    };
+
+    trigger.addEventListener('click', () => {
+      if (wrapper.classList.contains('is-open')) {
+        instance.close();
+        return;
+      }
+      instance.open();
+    });
+
+    menu.addEventListener('click', (event) => {
+      const optionButton = event.target.closest('.themed-select-option');
+      if (!optionButton || optionButton.disabled) {
+        return;
+      }
+      const nextValue = optionButton.dataset.value || '';
+      if (selectElement.value !== nextValue) {
+        selectElement.value = nextValue;
+        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      instance.sync();
+      instance.close();
+      trigger.focus();
+    });
+
+    const observer = new MutationObserver(() => instance.sync());
+    observer.observe(selectElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['disabled'],
+    });
+
+    selectElement.addEventListener('change', () => instance.sync());
+
+    themedSelectInstances.set(selectElement, instance);
+    instance.sync();
+    return instance;
+  }
+
+  document.addEventListener('click', (event) => {
+    themedSelectInstances.forEach((instance) => {
+      if (!instance.wrapper.contains(event.target)) {
+        instance.close();
+      }
+    });
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (activeStudioModal) {
+        closeStudioModal(activeStudioModal);
+        return;
+      }
+      closeThemedSelectMenus();
+    }
+  });
+
+  function getStudioModal(modalOrId) {
+    if (!modalOrId) {
+      return null;
+    }
+    if (typeof modalOrId === 'string') {
+      return document.getElementById(modalOrId);
+    }
+    return modalOrId;
+  }
+
+  function closeStudioModal(modalOrId = activeStudioModal, { restoreFocus = true } = {}) {
+    const modal = getStudioModal(modalOrId);
+    if (!modal) {
+      return false;
+    }
+
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    if (activeStudioModal === modal) {
+      activeStudioModal = null;
+    }
+    closeThemedSelectMenus();
+
+    if (modal._triggerButton && typeof modal._triggerButton.setAttribute === 'function') {
+      modal._triggerButton.setAttribute('aria-expanded', 'false');
+    }
+    const returnFocusTarget = modal._returnFocusTarget;
+    modal._triggerButton = null;
+    modal._returnFocusTarget = null;
+    if (restoreFocus && returnFocusTarget && typeof returnFocusTarget.focus === 'function') {
+      window.requestAnimationFrame(() => returnFocusTarget.focus());
+    }
+    return true;
+  }
+
+  function openStudioModal(modalOrId, trigger = null) {
+    const modal = getStudioModal(modalOrId);
+    if (!modal) {
+      return false;
+    }
+
+    if (settingsPanel && !settingsPanel.classList.contains('active')) {
+      setSidebarTab('settings');
+    }
+
+    if (activeStudioModal && activeStudioModal !== modal) {
+      closeStudioModal(activeStudioModal, { restoreFocus: false });
+    }
+
+    activeStudioModal = modal;
+    modal._returnFocusTarget = trigger || document.activeElement || null;
+    modal._triggerButton = trigger || null;
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    closeThemedSelectMenus();
+    if (trigger && typeof trigger.setAttribute === 'function') {
+      trigger.setAttribute('aria-expanded', 'true');
+    }
+
+    const dialog = modal.querySelector('.studio-modal-dialog');
+    if (dialog) {
+      dialog.scrollTop = 0;
+    }
+    window.requestAnimationFrame(() => {
+      if (dialog) {
+        dialog.focus();
+      }
+    });
+    return true;
+  }
+
+  function bindStudioModal(trigger, modal) {
+    if (!trigger || !modal) {
+      return;
+    }
+
+    trigger.addEventListener('click', () => {
+      openStudioModal(modal, trigger);
+    });
+
+    modal.addEventListener('click', (event) => {
+      const closeTrigger = event.target.closest('[data-modal-close]');
+      if (!closeTrigger) {
+        return;
+      }
+      closeStudioModal(modal);
+    });
+  }
+
+  function usesPresetVoice() {
+    return ENGINE_ID === 'gwen' && gwenVoiceMode === 'preset' && !!presetVoiceSelect && !!presetVoiceSelect.value;
+  }
+
+  function getActivePresetVoice() {
+    if (!VOICE_PRESETS.length || !presetVoiceSelect) {
+      return null;
+    }
+    return VOICE_PRESETS.find((voice) => voice.id === presetVoiceSelect.value) || VOICE_PRESETS[0] || null;
+  }
+
+  function getDefaultModelOption() {
+    const options = MODEL_SELECTION.options || [];
+    return options.find((item) => item.key === (MODEL_SELECTION.default_key || 'default')) || options[0] || null;
+  }
+
+  const voicePreviewAvatar = document.getElementById('voicePreviewAvatar');
+  const voicePreviewName = document.getElementById('voicePreviewName');
+  const voicePreviewStyle = document.getElementById('voicePreviewStyle');
+
+  function renderPresetVoiceDetail() {
+    const activeVoice = getActivePresetVoice();
+    if (!activeVoice) {
+      return;
+    }
+
+    if (presetVoicePlayer) {
+      presetVoicePlayer.src = activeVoice.audio_url;
+      presetVoicePlayer.load();
+    }
+
+    const idx = VOICE_PRESETS.indexOf(activeVoice);
+    const colorIdx = idx >= 0 ? idx % 10 : 0;
+    if (voicePreviewAvatar) {
+      const wasPlaying = voicePreviewAvatar.classList.contains('is-playing');
+      voicePreviewAvatar.className = 'voice-preview-avatar vl-color-' + colorIdx;
+      if (wasPlaying) voicePreviewAvatar.classList.add('is-playing');
+    }
+    if (voicePreviewName) voicePreviewName.textContent = activeVoice.name;
+    if (voicePreviewStyle) voicePreviewStyle.textContent = activeVoice.style || '';
+  }
+
+  function setGwenVoiceMode(mode) {
+    if (ENGINE_ID !== 'gwen' || !VOICE_PRESETS.length) {
+      return;
+    }
+    gwenVoiceMode = 'preset';
+
+    if (presetVoiceSelect && !presetVoiceSelect.value && VOICE_PRESETS[0]) {
+      presetVoiceSelect.value = VOICE_PRESETS[0].id;
+    }
+    renderPresetVoiceDetail();
+    syncReferenceTextUi();
+    syncThemedSelect(presetVoiceSelect);
+  }
+
+  function selectedEngineRequiresReferenceText() {
+    return true;
+  }
+
+  function syncReferenceTextUi() {
+    if (!referenceText) return;
+    if (ENGINE_ID === 'gwen' && usesPresetVoice()) {
+      const activeVoice = getActivePresetVoice();
+      referenceText.value = activeVoice ? activeVoice.reference_text : '';
+    }
+  }
+
+  function updateCount() {
+    const limit = Number(textInput.getAttribute('maxlength') || '{{ text_input_limit }}');
+    const len = textInput.value.trim().length;
+    const pct = limit > 0 ? (len / limit) * 100 : 0;
+    textCount.textContent = `${len} / ${limit}`;
+
+    textCount.classList.remove('is-warning', 'is-danger');
+    if (pct > 95) textCount.classList.add('is-danger');
+    else if (pct > 80) textCount.classList.add('is-warning');
+
+    if (textProgressBar) {
+      textProgressBar.style.width = `${Math.min(pct, 100)}%`;
+      textProgressBar.classList.remove('is-warning', 'is-danger');
+      if (pct > 95) textProgressBar.classList.add('is-danger');
+      else if (pct > 80) textProgressBar.classList.add('is-warning');
+    }
+  }
+
+  function debounceSaveSettings(delayMs = 500) {
+    if (saveSettingsTimer) {
+      window.clearTimeout(saveSettingsTimer);
+    }
+    saveSettingsTimer = window.setTimeout(() => {
+      saveSettingsTimer = null;
+      saveSettingsInFlight = saveCurrentSettings().finally(() => {
+        saveSettingsInFlight = null;
+      });
+    }, delayMs);
+  }
+
+  async function waitForPendingSettingsSave() {
+    if (saveSettingsTimer) {
+      window.clearTimeout(saveSettingsTimer);
+      saveSettingsTimer = null;
+      saveSettingsInFlight = saveCurrentSettings().finally(() => {
+        saveSettingsInFlight = null;
+      });
+    }
+    if (saveSettingsInFlight) {
+      await saveSettingsInFlight;
+    }
+  }
+
+  async function saveCurrentSettings() {
+    try {
+      await fetch('/api/settings/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pronunciation_rules: collectPronunciationRules(),
+          last_text: (textInput && textInput.value) ? textInput.value : '',
+        }),
+      });
+    } catch (error) {
+      console.warn('Không lưu được settings người dùng.', error);
+    }
+  }
+
+  async function loadSavedSettings() {
+    try {
+      const response = await fetch('/api/settings/load', { method: 'GET', cache: 'no-store' });
+      const payload = await parseApiResponse(response);
+      if (!response.ok || !payload.ok) {
+        return;
+      }
+      if (Array.isArray(payload.pronunciation_rules)) {
+        populatePronunciationRules(payload.pronunciation_rules);
+      }
+      if (typeof payload.last_text === 'string' && payload.last_text.trim()) {
+        textInput.value = payload.last_text;
+        lastSubmissionText = payload.last_text;
+      }
+      updateCount();
+    } catch (error) {
+      console.warn('Không tải được settings đã lưu.', error);
+    }
+  }
+
+  async function loadHistoryFromServer() {
+    try {
+      const response = await fetch('/api/history', { method: 'GET', cache: 'no-store' });
+      const payload = await parseApiResponse(response);
+      if (!response.ok || !payload.ok || !Array.isArray(payload.items)) {
+        return;
+      }
+      historyList.innerHTML = '';
+      payload.items.forEach((itemPayload) => {
+        historyList.appendChild(buildHistoryItemElement(itemPayload));
+      });
+      applyHistoryFilter();
+    } catch (error) {
+      console.warn('Không tải được lịch sử đã lưu.', error);
+    }
+  }
+
+  function updateSpeed() {
+    if (!speedRange || !speedValue) {
+      return;
+    }
+    speedValue.textContent = `${Number(speedRange.value).toFixed(2)}x`;
+  }
+
+  function updateGwenAdvancedSettingsUi() {
+    if (ENGINE_ID !== 'gwen' || !GWEN_SETTINGS) {
+      return;
+    }
+    if (gwenTemperature && gwenTemperatureValue) {
+      gwenTemperatureValue.textContent = Number(gwenTemperature.value).toFixed(1);
+    }
+    if (gwenTopP && gwenTopPValue) {
+      gwenTopPValue.textContent = Number(gwenTopP.value).toFixed(2);
+    }
+    if (gwenTopK && gwenTopKValue) {
+      gwenTopKValue.textContent = `${Math.round(Number(gwenTopK.value))}`;
+    }
+    if (gwenRepetitionPenalty && gwenRepetitionPenaltyValue) {
+      gwenRepetitionPenaltyValue.textContent = Number(gwenRepetitionPenalty.value).toFixed(1);
+    }
+    if (gwenMaxNewTokens && gwenMaxNewTokensValue) {
+      gwenMaxNewTokensValue.textContent = `${Math.round(Number(gwenMaxNewTokens.value))}`;
+    }
+    if (gwenSubtalkerTemperature && gwenSubtalkerTemperatureValue) {
+      gwenSubtalkerTemperatureValue.textContent = Number(gwenSubtalkerTemperature.value).toFixed(1);
+    }
+    if (gwenSubtalkerTopK && gwenSubtalkerTopKValue) {
+      gwenSubtalkerTopKValue.textContent = `${Math.round(Number(gwenSubtalkerTopK.value))}`;
+    }
+    if (gwenSubtalkerTopP && gwenSubtalkerTopPValue) {
+      gwenSubtalkerTopPValue.textContent = Number(gwenSubtalkerTopP.value).toFixed(2);
+    }
+    if (gwenSamplingMethod && gwenSamplingMethodValue) {
+      gwenSamplingMethodValue.textContent = gwenSamplingMethod.value || 'gumbel';
+    }
+  }
+
+  function createPronunciationRuleRow(source = '', target = '') {
+    const row = document.createElement('div');
+    row.className = 'pronunciation-rule-row';
+    row.innerHTML = `
+      <input
+        type="text"
+        name="pronunciation_from"
+        class="form-control compact-input pronunciation-rule-input"
+        placeholder="Chữ hoặc cụm từ"
+        value="${source.replace(/"/g, '&quot;')}"
+      />
+      <span class="pronunciation-rule-arrow"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></span>
+      <input
+        type="text"
+        name="pronunciation_to"
+        class="form-control compact-input pronunciation-rule-input"
+        placeholder="Cách đọc mong muốn"
+        value="${target.replace(/"/g, '&quot;')}"
+      />
+      <button type="button" class="pronunciation-rule-remove" aria-label="Xóa cặp phát âm"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    `;
+
+    const removeButton = row.querySelector('.pronunciation-rule-remove');
+    removeButton.addEventListener('click', () => {
+      row.remove();
+      if (pronunciationRules && !pronunciationRules.children.length) {
+        pronunciationRules.appendChild(createPronunciationRuleRow());
+      }
+    });
+    return row;
+  }
+
+  function collectPronunciationRules() {
+    if (!pronunciationRules) {
+      return [];
+    }
+    const rows = Array.from(pronunciationRules.querySelectorAll('.pronunciation-rule-row'));
+    const rules = [];
+    for (const row of rows) {
+      const sourceInput = row.querySelector('input[name="pronunciation_from"]');
+      const targetInput = row.querySelector('input[name="pronunciation_to"]');
+      const source = (sourceInput && sourceInput.value || '').trim();
+      const target = (targetInput && targetInput.value || '').trim();
+      if (source && target) {
+        rules.push({ from: source, to: target });
+      }
+    }
+    return rules;
+  }
+
+  function populatePronunciationRules(rules) {
+    if (!pronunciationRules) {
+      return;
+    }
+    pronunciationRules.innerHTML = '';
+    if (!rules || !rules.length) {
+      pronunciationRules.appendChild(createPronunciationRuleRow());
+      return;
+    }
+    for (const rule of rules) {
+      pronunciationRules.appendChild(createPronunciationRuleRow(rule.from || '', rule.to || ''));
+    }
+  }
+
+  async function uploadPronunciationFile() {
+    if (!pronunciationFileInput) {
+      return;
+    }
+    pronunciationFileInput.value = '';
+    pronunciationFileInput.click();
+  }
+
+  async function handlePronunciationFileSelected(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.set('pronunciation_file', file);
+
+    try {
+      const response = await fetch('/api/pronunciation/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        alert(payload.error || 'Không thể đọc file phát âm.');
+        return;
+      }
+      populatePronunciationRules(payload.rules);
+      alert(`Đã tải ${payload.count} cặp phát âm từ file "${payload.filename}".`);
+    } catch (error) {
+      alert('Lỗi khi upload file phát âm: ' + (error.message || error));
+    }
+  }
+
+  async function downloadPronunciationFile() {
+    const rules = collectPronunciationRules();
+    if (!rules.length) {
+      alert('Chưa có cặp phát âm nào để tải xuống.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/pronunciation/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        alert(payload.error || 'Không thể xuất file phát âm.');
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'pronunciation_rules.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      alert('Lỗi khi tải xuống file phát âm: ' + (error.message || error));
+    }
+  }
+
+  function resetPronunciationRules() {
+    if (!pronunciationRules) {
+      return;
+    }
+    pronunciationRules.innerHTML = '';
+    pronunciationRules.appendChild(createPronunciationRuleRow());
+  }
+
+  function validatePronunciationRules() {
+    if (!pronunciationRules) {
+      return true;
+    }
+
+    const rows = Array.from(pronunciationRules.querySelectorAll('.pronunciation-rule-row'));
+    for (let index = 0; index < rows.length; index += 1) {
+      const sourceInput = rows[index].querySelector('input[name="pronunciation_from"]');
+      const targetInput = rows[index].querySelector('input[name="pronunciation_to"]');
+      const source = (sourceInput && sourceInput.value || '').trim();
+      const target = (targetInput && targetInput.value || '').trim();
+      if (!!source !== !!target) {
+        openStudioModal(pronunciationSettingsModal, pronunciationSettingsToggle);
+        alert(`Dòng phát âm ${index + 1} phải có đủ chữ gốc và cách đọc.`);
+        (sourceInput && !source ? sourceInput : targetInput).focus();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function syncSidebarLayout() {
+    // Sidebar luôn dùng sticky + internal scroll, không cần điều chỉnh layout động
+  }
+
+  function resetGwenAdvancedSettings() {
+    if (ENGINE_ID !== 'gwen' || !GWEN_SETTINGS) {
+      return;
+    }
+
+    if (speedRange) {
+      speedRange.value = GWEN_SETTINGS.defaults.speed;
+    }
+    if (gwenTemperature) {
+      gwenTemperature.value = GWEN_SETTINGS.defaults.temperature;
+    }
+    if (gwenTopP) {
+      gwenTopP.value = GWEN_SETTINGS.defaults.topP;
+    }
+    if (gwenTopK) {
+      gwenTopK.value = GWEN_SETTINGS.defaults.topK;
+    }
+    if (gwenRepetitionPenalty) {
+      gwenRepetitionPenalty.value = GWEN_SETTINGS.defaults.repetitionPenalty;
+    }
+    if (gwenMaxNewTokens) {
+      gwenMaxNewTokens.value = GWEN_SETTINGS.defaults.maxNewTokens;
+    }
+    if (gwenSubtalkerDoSample) {
+      gwenSubtalkerDoSample.checked = !!GWEN_SETTINGS.defaults.codePredictorDoSample;
+    }
+    if (gwenSubtalkerTemperature) {
+      gwenSubtalkerTemperature.value = GWEN_SETTINGS.defaults.codePredictorTemperature;
+    }
+    if (gwenSubtalkerTopK) {
+      gwenSubtalkerTopK.value = GWEN_SETTINGS.defaults.codePredictorTopK;
+    }
+    if (gwenSubtalkerTopP) {
+      gwenSubtalkerTopP.value = GWEN_SETTINGS.defaults.codePredictorTopP;
+    }
+    if (gwenSamplingMethod) {
+      gwenSamplingMethod.value = GWEN_SETTINGS.defaults.codePredictorSamplingMethod;
+    }
+
+    updateSpeed();
+    updateGwenAdvancedSettingsUi();
+  }
+
+  function fillExample(text) {
+    textInput.value = text;
+    updateCount();
+    textInput.focus();
+  }
+
+  async function parseApiResponse(response) {
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+    if (contentType.includes('application/json')) {
+      try {
+        return await response.json();
+      } catch (error) {
+        console.error('Không parse được JSON từ API.', error);
+      }
+    }
+
+    const rawText = (await response.text()).trim();
+    if (response.status === 413) {
+      return {
+        ok: false,
+        error: `File upload quá lớn. Giới hạn hiện tại là ${MAX_UPLOAD_MB} MB.`,
+      };
+    }
+
+    const fallbackError = rawText && !rawText.startsWith('<') ? rawText : `API trả về lỗi ${response.status}.`;
+    return {
+      ok: false,
+      error: fallbackError,
+    };
+  }
+
+  let pendingHistoryItem = null;
+
+  function createPendingHistoryItem(text) {
+    const history = historyList;
+    const empty = history.querySelector('.empty-state');
+    if (empty) empty.remove();
+
+    const item = document.createElement('div');
+    item.className = 'history-item history-item-pending';
+    const previewText = summarizeHistoryText(text);
+    item.innerHTML = `
+      <div class="history-status-row">
+        <span class="history-status-badge history-badge-pending">
+          <span class="history-pending-dot"></span>
+          Đang tổng hợp
+        </span>
+        <span class="history-time history-pending-elapsed" data-start="${Date.now()}">0s</span>
+      </div>
+      <div class="history-pending-bar"><div class="history-pending-bar-fill"></div></div>
+      <div class="history-preview">${previewText || 'Đang xử lý...'}</div>
+      <div class="history-pending-status">Đang gửi yêu cầu...</div>
+    `;
+    history.prepend(item);
+    pendingHistoryItem = item;
+
+    setSidebarTab('history');
+    applyHistoryFilter();
+    startPendingTimer();
+    return item;
+  }
+
+  let pendingTimerInterval = null;
+  function startPendingTimer() {
+    stopPendingTimer();
+    pendingTimerInterval = setInterval(function() {
+      if (!pendingHistoryItem) { stopPendingTimer(); return; }
+      const el = pendingHistoryItem.querySelector('.history-pending-elapsed');
+      if (!el) return;
+      const elapsed = Math.floor((Date.now() - parseInt(el.dataset.start)) / 1000);
+      el.textContent = elapsed + 's';
+    }, 1000);
+  }
+  function stopPendingTimer() {
+    if (pendingTimerInterval) { clearInterval(pendingTimerInterval); pendingTimerInterval = null; }
+  }
+
+  function updatePendingHistoryStatus(message) {
+    if (!pendingHistoryItem) return;
+    const statusEl = pendingHistoryItem.querySelector('.history-pending-status');
+    if (statusEl && message) statusEl.textContent = message;
+  }
+
+  function replacePendingWithResult(payload) {
+    stopPendingTimer();
+    if (!pendingHistoryItem) { renderHistory(payload); return; }
+    const history = historyList;
+    const newItem = buildHistoryItemElement(payload);
+    history.replaceChild(newItem, pendingHistoryItem);
+    pendingHistoryItem = null;
+    while (history.children.length > 8) {
+      history.removeChild(history.lastElementChild);
+    }
+    applyHistoryFilter();
+  }
+
+  function replacePendingWithError(errorMessage) {
+    stopPendingTimer();
+    if (!pendingHistoryItem) return;
+    pendingHistoryItem.classList.remove('history-item-pending');
+    pendingHistoryItem.classList.add('history-item-error');
+    const badge = pendingHistoryItem.querySelector('.history-status-badge');
+    if (badge) {
+      badge.className = 'history-status-badge history-badge-error';
+      badge.innerHTML = 'Lỗi';
+    }
+    const bar = pendingHistoryItem.querySelector('.history-pending-bar');
+    if (bar) bar.remove();
+    const statusEl = pendingHistoryItem.querySelector('.history-pending-status');
+    if (statusEl) statusEl.textContent = errorMessage || 'Không thể sinh audio.';
+    pendingHistoryItem = null;
+  }
+
+  function setLoadingState(title, subtitle) {
+    updatePendingHistoryStatus(title);
+  }
+
+  function delayWithAbort(ms, signal) {
+    return new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        cleanup();
+        resolve();
+      }, ms);
+
+      function onAbort() {
+        cleanup();
+        reject(new DOMException('Aborted', 'AbortError'));
+      }
+
+      function cleanup() {
+        window.clearTimeout(timeoutId);
+        if (signal) {
+          signal.removeEventListener('abort', onAbort);
+        }
+      }
+
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+  }
+
+  async function pollGenerationJob(jobId, signal) {
+    const safeJobId = encodeURIComponent(jobId);
+
+    while (true) {
+      const response = await fetch(`/api/tts/jobs/${safeJobId}`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal,
+      });
+      const payload = await parseApiResponse(response);
+      if (!response.ok && response.status !== 200) {
+        throw new Error(payload.error || `Không lấy được trạng thái job (HTTP ${response.status}).`);
+      }
+      if (payload.done) {
+        if (!payload.ok) {
+          throw new Error(payload.error || 'Job synthesize thất bại.');
+        }
+        return payload.result;
+      }
+
+      updatePendingHistoryStatus(
+        payload.status === 'queued' ? 'Đang xếp hàng synthesize...' : 'Đang sinh giọng nói...'
+      );
+      await delayWithAbort(1500, signal);
+    }
+  }
+
+  function setStudioBusyState(isBusy) {
+    const generateBtn = document.getElementById('generateBtn');
+    if (generateBtn) {
+      generateBtn.disabled = isBusy || {{ 'true' if not engine_card.ready else 'false' }};
+      generateBtn.textContent = isBusy ? 'Đang Chuyển...' : 'Chuyển Đổi';
+    }
+  }
+
+  function setReferenceTranscriptionStatus(message = '', tone = 'neutral') {
+    if (!referenceTranscribeStatus || !referenceTranscribeStatusLabel) {
+      return;
+    }
+
+    referenceTranscribeStatus.classList.remove('hidden', 'is-loading', 'is-success', 'is-error');
+    if (!message) {
+      referenceTranscribeStatus.classList.add('hidden');
+      referenceTranscribeStatusLabel.textContent = 'Chưa nhận diện transcript từ audio clone.';
+      window.requestAnimationFrame(syncSidebarLayout);
+      return;
+    }
+
+    referenceTranscribeStatusLabel.textContent = message;
+    referenceTranscribeStatus.classList.toggle('is-loading', tone === 'loading');
+    referenceTranscribeStatus.classList.toggle('is-success', tone === 'success');
+    referenceTranscribeStatus.classList.toggle('is-error', tone === 'error');
+    window.requestAnimationFrame(syncSidebarLayout);
+  }
+
+  function updateReferenceTranscriptActionState() {
+    return;
+  }
+
+  function setReferenceTranscriptionBusy(isBusy) {
+    updateReferenceTranscriptActionState();
+  }
+
+  async function transcribeReferenceAudio({ auto = false } = {}) {
+    const selectedFile = referenceAudio && referenceAudio.files && referenceAudio.files[0];
+    if (!selectedFile) {
+      if (!auto) {
+        setReferenceTranscriptionStatus('Chưa có audio clone để nhận diện transcript.', 'error');
+      }
+      updateReferenceTranscriptActionState();
+      return;
+    }
+    if (selectedFile.size > MAX_UPLOAD_BYTES) {
+      setReferenceTranscriptionStatus(`File audio vượt quá ${MAX_UPLOAD_MB} MB. Hãy cắt ngắn file rồi thử lại.`, 'error');
+      updateReferenceTranscriptActionState();
+      return;
+    }
+
+    if (activeTranscriptionController) {
+      activeTranscriptionController.abort();
+    }
+
+    const formData = new FormData();
+    formData.set('reference_audio', selectedFile);
+    const controller = new AbortController();
+    activeTranscriptionController = controller;
+    setReferenceTranscriptionBusy(true);
+    setReferenceTranscriptionStatus('Đang nhận diện transcript từ audio clone...', 'loading');
+
+    try {
+      const response = await fetch('/api/tts/transcribe-reference', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+      const payload = await parseApiResponse(response);
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || `Không thể nhận diện transcript (HTTP ${response.status}).`);
+      }
+
+      referenceText.value = payload.text || '';
+      referenceText.dataset.fromPreset = 'false';
+      referenceText.dataset.autoDetected = 'true';
+      syncReferenceTextUi();
+      updateReferenceTranscriptActionState();
+      setReferenceTranscriptionStatus(
+        `Đã nhận diện transcript từ audio clone. Có thể sửa lại trước khi generate.${payload.duration_seconds ? ` Audio khoảng ${payload.duration_seconds}s.` : ''}`,
+        'success',
+      );
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        return;
+      }
+      setReferenceTranscriptionStatus(
+        error && error.message ? error.message : 'Không thể nhận diện transcript từ audio clone.',
+        'error',
+      );
+    } finally {
+      if (activeTranscriptionController === controller) {
+        activeTranscriptionController = null;
+      }
+      setReferenceTranscriptionBusy(false);
+    }
+  }
+
+  function summarizeHistoryText(text, limit = 180) {
+    const compact = (text || '').replace(/\s+/g, ' ').trim();
+    if (!compact) {
+      return '';
+    }
+    if (compact.length <= limit) {
+      return compact;
+    }
+    return `${compact.slice(0, limit).trimEnd()}...`;
+  }
+
+  function applyHistoryFilter() {
+    if (!historyList) {
+      return;
+    }
+    const query = ((historySearchInput && historySearchInput.value) || '').trim().toLowerCase();
+    const items = Array.from(historyList.querySelectorAll('.history-item'));
+    let visibleCount = 0;
+
+    items.forEach((item) => {
+      const haystack = (item.dataset.searchText || '').toLowerCase();
+      const matched = !query || haystack.includes(query);
+      item.classList.toggle('hidden', !matched);
+      if (matched) {
+        visibleCount += 1;
+      }
+    });
+
+    let empty = historyList.querySelector('.empty-state');
+    if (!empty) {
+      empty = document.createElement('div');
+      empty.className = 'empty-state small hidden';
+      historyList.appendChild(empty);
+    }
+    if (empty) {
+      empty.classList.toggle('hidden', items.length > 0 || !!query);
+      if (query && visibleCount === 0) {
+        empty.textContent = 'Không tìm thấy audio nào khớp với từ khóa đang lọc.';
+        empty.classList.remove('hidden');
+      } else if (!query && items.length === 0) {
+        empty.textContent = 'Các lượt generate mới sẽ hiện ở đây.';
+      }
+    }
+  }
+
+  function setSidebarTab(tab) {
+    const showHistory = tab === 'history';
+    if (showHistory && activeStudioModal) {
+      closeStudioModal(activeStudioModal, { restoreFocus: false });
+    }
+    if (settingsTabBtn && historyTabBtn) {
+      settingsTabBtn.classList.toggle('active', !showHistory);
+      historyTabBtn.classList.toggle('active', showHistory);
+    }
+    if (settingsPanel && historyPanel) {
+      settingsPanel.classList.toggle('active', !showHistory);
+      historyPanel.classList.toggle('active', showHistory);
+    }
+    window.requestAnimationFrame(syncSidebarLayout);
+  }
+
+  function formatAudioTime(totalSeconds) {
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+      return '00:00';
+    }
+    const seconds = Math.floor(totalSeconds);
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(remain).padStart(2, '0')}`;
+  }
+
+  function syncPlayIcon() {
+    if (!resultPlayIcon || !resultPlayer) {
+      return;
+    }
+    resultPlayIcon.innerHTML = resultPlayer.paused
+      ? '<path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.86-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z"></path>'
+      : '<path d="M7 5a1 1 0 0 1 1 1v12a1 1 0 1 1-2 0V6a1 1 0 0 1 1-1zm10 0a1 1 0 0 1 1 1v12a1 1 0 1 1-2 0V6a1 1 0 0 1 1-1z"></path>';
+  }
+
+  function scheduleResultAutoplay() {
+    if (autoPlayBtn && autoPlayBtn.getAttribute('aria-pressed') === 'false') {
+      return;
+    }
+    if (!resultPlayer) {
+      return;
+    }
+
+    const tryPlay = () => {
+      resultPlayer.play().catch(() => {
+        const prevMuted = resultPlayer.muted;
+        resultPlayer.muted = true;
+        const p = resultPlayer.play();
+        if (p !== undefined) {
+          p.then(() => {
+            resultPlayer.muted = prevMuted;
+          }).catch(() => {
+            resultPlayer.muted = prevMuted;
+          });
+        } else {
+          resultPlayer.muted = prevMuted;
+        }
+      });
+    };
+
+    if (resultPlayer.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      tryPlay();
+    } else {
+      resultPlayer.addEventListener('canplay', tryPlay, { once: true });
+    }
+  }
+
+  function syncResultPlayerUi() {
+    if (!resultPlayer) {
+      return;
+    }
+    const duration = Number.isFinite(resultPlayer.duration) ? resultPlayer.duration : 0;
+    const currentTime = Number.isFinite(resultPlayer.currentTime) ? resultPlayer.currentTime : 0;
+    if (resultSeekRange) {
+      resultSeekRange.value = duration > 0 ? String(Math.round((currentTime / duration) * 1000)) : '0';
+    }
+    if (resultCurrentTime) {
+      resultCurrentTime.textContent = formatAudioTime(currentTime);
+    }
+    if (resultDuration) {
+      resultDuration.textContent = formatAudioTime(duration);
+    }
+    syncPlayIcon();
+  }
+
+  function resetStudio() {
+    document.getElementById('ttsForm').reset();
+    activeRequestController = null;
+    updateCount();
+    updateSpeed();
+    updateGwenAdvancedSettingsUi();
+    resetPronunciationRules();
+    if (historySearchInput) {
+      historySearchInput.value = '';
+      applyHistoryFilter();
+    }
+    if (resultPlayer) {
+      resultPlayer.pause();
+      resultPlayer.removeAttribute('src');
+      resultPlayer.load();
+      syncResultPlayerUi();
+    }
+    setStudioBusyState(false);
+    if (ENGINE_ID === 'gwen' && VOICE_PRESETS.length) {
+      if (presetVoiceSelect) {
+        presetVoiceSelect.value = VOICE_PRESETS[0].id;
+      }
+      setGwenVoiceMode('preset');
+    }
+  }
+
+  async function copyAudioUrl() {
+    if (!latestAudioUrl) return;
+    try {
+      await navigator.clipboard.writeText(window.location.origin + latestAudioUrl);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function buildHistoryItemElement(payload) {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    const inputText = (payload.input_text || '').trim();
+    const previewText = summarizeHistoryText(inputText || lastSubmissionText);
+    const modelLabel = payload.model_label || '';
+    const modelMeta = modelLabel ? ` · ${modelLabel}` : '';
+    const voiceMeta = payload.preset_voice_label || payload.voice_label || payload.engine_label || payload.engine || 'Unknown';
+    const downloadName = payload.download_name || '';
+    const sampleRate = Number(payload.sample_rate || 0);
+    const durationSeconds = Number(payload.duration_seconds || 0);
+    const chunkCount = Number(payload.chunk_count || 0);
+    item.dataset.inputText = inputText;
+    item.dataset.searchText = [downloadName, previewText, voiceMeta, modelLabel]
+      .join(' ')
+      .trim();
+    item.title = 'Click để hiện lại văn bản';
+    item.style.cursor = 'pointer';
+    item.innerHTML = `
+      <div class="history-status-row">
+        <span class="history-status-badge">Thành công</span>
+        <span class="history-time">${durationSeconds.toFixed(2)}s</span>
+      </div>
+      <div class="history-top">
+        <strong>${voiceMeta}</strong>
+        <span>${sampleRate} Hz</span>
+      </div>
+      <div class="history-file">${downloadName}</div>
+      <div class="history-preview">${previewText || 'Không có preview văn bản.'}</div>
+      <div class="history-meta">${sampleRate} Hz · ${chunkCount} chunk${modelMeta}</div>
+      <div class="history-actions-row">
+        <audio controls class="history-player" src="${payload.audio_url}"></audio>
+        <a class="history-download" href="${payload.audio_url}" download="${downloadName}" aria-label="Tải audio">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg" class="size-4">
+            <path d="M7.50005 1.04999C7.74858 1.04999 7.95005 1.25146 7.95005 1.49999V8.41359L10.1819 6.18179C10.3576 6.00605 10.6425 6.00605 10.8182 6.18179C10.994 6.35753 10.994 6.64245 10.8182 6.81819L7.81825 9.81819C7.64251 9.99392 7.35759 9.99392 7.18185 9.81819L4.18185 6.81819C4.00611 6.64245 4.00611 6.35753 4.18185 6.18179C4.35759 6.00605 4.64251 6.00605 4.81825 6.18179L7.05005 8.41359V1.49999C7.05005 1.25146 7.25152 1.04999 7.50005 1.04999ZM2.5 10C2.77614 10 3 10.2239 3 10.5V12C3 12.5539 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2239 12.2239 10 12.5 10C12.7761 10 13 10.2239 13 10.5V12C13 13.1041 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2239 2.22386 10 2.5 10Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path>
+          </svg>
+        </a>
+      </div>
+    `;
+    item.addEventListener('click', (event) => {
+      if (event.target.closest('.history-actions-row')) {
+        return;
+      }
+      const originalText = (item.dataset.inputText || '').trim();
+      if (!originalText) {
+        return;
+      }
+      textInput.value = originalText;
+      lastSubmissionText = originalText;
+      updateCount();
+      textInput.focus();
+    });
+    return item;
+  }
+
+  function renderHistory(payload) {
+    const history = historyList;
+    const empty = history.querySelector('.empty-state');
+    if (empty) empty.remove();
+
+    const item = buildHistoryItemElement(payload);
+    history.prepend(item);
+
+    while (history.children.length > 8) {
+      history.removeChild(history.lastElementChild);
+    }
+    applyHistoryFilter();
+  }
+
+  function renderResult(payload) {
+    document.getElementById('resultState').classList.add('hidden');
+    document.getElementById('resultCard').classList.remove('hidden');
+    document.getElementById('resultEngineLabel').textContent = payload.model_label
+      ? `${payload.engine_label} / ${payload.model_label}`
+      : payload.engine_label;
+    document.getElementById('resultFilename').textContent = payload.download_name;
+    document.getElementById('resultRate').textContent = `${payload.sample_rate} Hz`;
+    document.getElementById('resultStats').innerHTML = `
+      <div class="result-stat"><span>Thời lượng</span><strong>${payload.duration_seconds.toFixed(2)}s</strong></div>
+      <div class="result-stat"><span>Inference</span><strong>${payload.inference_seconds.toFixed(2)}s</strong></div>
+      <div class="result-stat"><span>Chunks</span><strong>${payload.chunk_count}</strong></div>
+      <div class="result-stat"><span>Model</span><strong>${payload.model_label || 'Default'}</strong></div>
+    `;
+    resultPlayer.src = payload.audio_url;
+    resultPlayer.load();
+    syncResultPlayerUi();
+
+    latestAudioUrl = payload.audio_url;
+    latestAudioName = payload.download_name;
+    const downloadLink = document.getElementById('downloadLink');
+    downloadLink.href = payload.audio_url;
+    downloadLink.setAttribute('download', latestAudioName);
+
+    scheduleResultAutoplay();
+  }
+
+  if (settingsTabBtn && historyTabBtn) {
+    settingsTabBtn.addEventListener('click', () => setSidebarTab('settings'));
+    historyTabBtn.addEventListener('click', () => setSidebarTab('history'));
+  }
+  if (autoPlayBtn) {
+    autoPlayBtn.addEventListener('click', () => {
+      const isOn = autoPlayBtn.getAttribute('aria-pressed') !== 'false';
+      autoPlayBtn.setAttribute('aria-pressed', isOn ? 'false' : 'true');
+    });
+  }
+  if (historySearchInput) {
+    historySearchInput.addEventListener('input', applyHistoryFilter);
+  }
+  if (resultPlayButton && resultPlayer) {
+    resultPlayButton.addEventListener('click', () => {
+      if (resultPlayer.paused) {
+        resultPlayer.play().catch(() => {});
+      } else {
+        resultPlayer.pause();
+      }
+    });
+  }
+  if (resultSeekRange && resultPlayer) {
+    resultSeekRange.addEventListener('input', () => {
+      const duration = Number.isFinite(resultPlayer.duration) ? resultPlayer.duration : 0;
+      if (!duration) {
+        return;
+      }
+      resultPlayer.currentTime = (Number(resultSeekRange.value) / 1000) * duration;
+      syncResultPlayerUi();
+    });
+  }
+  if (resultPlayer) {
+    ['loadedmetadata', 'timeupdate', 'play', 'pause', 'ended'].forEach((eventName) => {
+      resultPlayer.addEventListener(eventName, syncResultPlayerUi);
+    });
+  }
+
+  textInput.addEventListener('input', updateCount);
+  textInput.addEventListener('input', () => debounceSaveSettings());
+  if (speedRange) {
+    speedRange.addEventListener('input', () => {
+      updateSpeed();
+      updateGwenAdvancedSettingsUi();
+    });
+  }
+  [
+    gwenTemperature,
+    gwenTopP,
+    gwenTopK,
+    gwenRepetitionPenalty,
+    gwenMaxNewTokens,
+    gwenSubtalkerTemperature,
+    gwenSubtalkerTopK,
+    gwenSubtalkerTopP,
+    gwenSubtalkerDoSample,
+  ].filter(Boolean).forEach((input) => {
+    input.addEventListener('input', updateGwenAdvancedSettingsUi);
+    input.addEventListener('change', updateGwenAdvancedSettingsUi);
+  });
+  if (resetGwenSettingsBtn) {
+    resetGwenSettingsBtn.addEventListener('click', resetGwenAdvancedSettings);
+  }
+  if (addPronunciationRuleBtn) {
+    addPronunciationRuleBtn.addEventListener('click', () => {
+      pronunciationRules.appendChild(createPronunciationRuleRow());
+      debounceSaveSettings();
+    });
+  }
+  if (clearPronunciationRulesBtn) {
+    clearPronunciationRulesBtn.addEventListener('click', () => {
+      resetPronunciationRules();
+      debounceSaveSettings();
+    });
+  }
+  if (uploadPronunciationBtn) {
+    uploadPronunciationBtn.addEventListener('click', uploadPronunciationFile);
+  }
+  if (pronunciationFileInput) {
+    pronunciationFileInput.addEventListener('change', async (event) => {
+      await handlePronunciationFileSelected(event);
+      debounceSaveSettings();
+    });
+  }
+  if (downloadPronunciationBtn) {
+    downloadPronunciationBtn.addEventListener('click', downloadPronunciationFile);
+  }
+  if (presetVoiceSelect) {
+    presetVoiceSelect.addEventListener('change', () => {
+      renderPresetVoiceDetail();
+      syncReferenceTextUi();
+      syncThemedSelect(presetVoiceSelect);
+    });
+  }
+  if (pronunciationRules) {
+    pronunciationRules.addEventListener('input', (event) => {
+      if (event.target.closest('.pronunciation-rule-row')) {
+        debounceSaveSettings();
+      }
+    });
+  }
+  if (presetVoicePlayer && voicePreviewAvatar) {
+    presetVoicePlayer.addEventListener('play', () => voicePreviewAvatar.classList.add('is-playing'));
+    presetVoicePlayer.addEventListener('pause', () => voicePreviewAvatar.classList.remove('is-playing'));
+    presetVoicePlayer.addEventListener('ended', () => voicePreviewAvatar.classList.remove('is-playing'));
+  }
+
+  document.getElementById('ttsForm').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    if (!textInput.value.trim()) {
+      textInput.focus();
+      alert('Vui lòng nhập văn bản tiếng Việt cần chuyển giọng.');
+      return;
+    }
+    if (!validatePronunciationRules()) {
+      return;
+    }
+    if (!usesPresetVoice()) {
+      alert('Vui lòng chọn giọng nói trước khi generate.');
+      return;
+    }
+
+    lastSubmissionText = textInput.value.trim();
+    activeRequestController = new AbortController();
+    setStudioBusyState(true);
+
+    try {
+      createPendingHistoryItem(lastSubmissionText);
+      const formData = new FormData(this);
+      formData.set('async', '1');
+      const response = await fetch('/api/tts/generate', {
+        method: 'POST',
+        body: formData,
+        signal: activeRequestController.signal,
+      });
+      const payload = await parseApiResponse(response);
+      if (!response.ok || !payload.ok) {
+        replacePendingWithError(payload.error || `Không thể sinh audio (HTTP ${response.status}).`);
+        return;
+      }
+
+      if (response.status === 202 || payload.queued) {
+        updatePendingHistoryStatus('Đã vào hàng đợi, đang chờ model...');
+        const completedPayload = await pollGenerationJob(payload.job_id, activeRequestController.signal);
+        renderResult(completedPayload);
+        replacePendingWithResult(completedPayload);
+        debounceSaveSettings(200);
+        return;
+      }
+
+      renderResult(payload);
+      replacePendingWithResult(payload);
+      debounceSaveSettings(200);
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        replacePendingWithError('Đã huỷ. Job có thể vẫn hoàn tất trong nền.');
+        return;
+      }
+      replacePendingWithError(error && error.message ? error.message : 'Không thể kết nối tới API TTS.');
+      console.error(error);
+    } finally {
+      activeRequestController = null;
+      setStudioBusyState(false);
+    }
+  });
+
+  updateCount();
+  updateSpeed();
+  updateGwenAdvancedSettingsUi();
+  mountThemedSelect(presetVoiceSelect);
+  resetPronunciationRules();
+  bindStudioModal(advancedGwenSettingsToggle, advancedGwenSettingsModal);
+  bindStudioModal(pronunciationSettingsToggle, pronunciationSettingsModal);
+  setSidebarTab('settings');
+  syncResultPlayerUi();
+  applyHistoryFilter();
+  setStudioBusyState(false);
+  loadSavedSettings();
+  loadHistoryFromServer();
+  window.addEventListener('beforeunload', () => {
+    waitForPendingSettingsSave();
+  });
+  window.addEventListener('resize', () => {
+    closeThemedSelectMenus();
+  });
+  if (ENGINE_ID === 'gwen' && VOICE_PRESETS.length) {
+    if (presetVoiceSelect) {
+      const urlVoice = new URLSearchParams(window.location.search).get('voice');
+      const match = urlVoice && VOICE_PRESETS.find(v => v.id === urlVoice);
+      presetVoiceSelect.value = match ? match.id : VOICE_PRESETS[0].id;
+    }
+    setGwenVoiceMode('preset');
+  }
+</script>
+
+{% endblock %}

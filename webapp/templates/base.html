@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF to Word Studio</title>
+    <meta
+      name="description"
+      content="Chuyen PDF thanh file Word editable bang MinerU."
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      href="{{ url_for('static', filename='images/logo_ubgr.png', v=static_version) }}"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css', v=static_version) }}"
+    />
+  </head>
+  <body class="page-{{ active }}">
+    <div class="site-shell">
+      <header class="site-header">
+        <a class="brand" href="{{ url_for('home') }}">
+          <span class="brand-mark">
+            <img
+              src="{{ url_for('static', filename='images/logo.png', v=static_version) }}"
+              alt=""
+            />
+          </span>
+          <span>
+            <strong>PDF to Word Studio</strong>
+            <small>MinerU document conversion</small>
+          </span>
+        </a>
+        <nav class="top-nav" aria-label="Main">
+          <a href="{{ url_for('home') }}" class="{{ 'active' if active == 'converter' }}">
+            <span aria-hidden="true">↥</span>
+            Convert
+          </a>
+        </nav>
+      </header>
+
+      <main>{% block content %}{% endblock %}</main>
+
+      <footer class="site-footer">
+        <span>© 2026 Sin Tran</span>
+        <span>PDF to Word Studio</span>
+      </footer>
+    </div>
+  </body>
+</html>

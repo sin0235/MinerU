@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-mineru/
+webapp/runtime/
+webapp_colab.log
+webapp_colab.pid
+cloudflared.log
+cloudflared.pid
