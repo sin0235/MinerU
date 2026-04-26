@@ -112,6 +112,7 @@ def _conversion_options_from_request() -> ConversionOptions:
         end_page=end_page,
         server_url=(form.get("server_url") or "").strip(),
         latex_delimiters_type=latex_delimiters_type,
+        exam_format=_form_bool("exam_format", default=False),
     )
 
 

@@ -94,6 +94,10 @@
             <input id="forceOcrInput" type="checkbox" />
             <span>Ép OCR</span>
           </label>
+          <label>
+            <input id="examFormatInput" name="exam_format" type="checkbox" />
+            <span>Format đề thi trắc nghiệm</span>
+          </label>
         </div>
 
         <label class="server-url-field">
@@ -424,6 +428,7 @@
     formData.set('latex_delimiters_type', document.getElementById('latexDelimitersInput').value);
     formData.set('formula_enable', document.getElementById('formulaInput').checked ? 'true' : 'false');
     formData.set('table_enable', document.getElementById('tableInput').checked ? 'true' : 'false');
+    formData.set('exam_format', document.getElementById('examFormatInput').checked ? 'true' : 'false');
     formData.set('start_page', document.getElementById('startPageInput').value || '1');
     formData.set('end_page', document.getElementById('endPageInput').value || '');
     formData.set('server_url', document.getElementById('serverUrlInput').value.trim());

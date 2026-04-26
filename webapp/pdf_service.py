@@ -18,8 +18,10 @@ from typing import Any
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.oxml import OxmlElement, parse_xml
-from docx.oxml.ns import nsdecls
-from docx.shared import Inches, Pt
+from docx.oxml.ns import nsdecls, qn
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Cm, Inches, Pt
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
@@ -81,6 +83,7 @@ class ConversionOptions:
     end_page: int | None = None
     server_url: str = ""
     latex_delimiters_type: str = "b"
+    exam_format: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -93,6 +96,7 @@ class ConversionOptions:
             "end_page": self.end_page,
             "server_url": self.server_url,
             "latex_delimiters_type": self.latex_delimiters_type,
+            "exam_format": self.exam_format,
         }
 
 
@@ -354,7 +358,12 @@ class PDFConversionService:
             raise ConversionError("MinerU khong tra ve noi dung doc duoc de tao DOCX.")
 
         docx_path = docx_dir / f"{secure_filename(Path(submission.original_filename).stem) or 'document'}.docx"
-        self._write_docx(blocks, docx_path, base_dirs=[mineru_output_dir, source_path.parent if source_path else mineru_output_dir])
+        self._write_docx(
+            blocks,
+            docx_path,
+            base_dirs=[mineru_output_dir, source_path.parent if source_path else mineru_output_dir],
+            options=submission.options,
+        )
 
         artifacts = self._collect_artifacts(job_dir, docx_path)
         if not self.keep_artifacts:
@@ -798,6 +807,13 @@ class PDFConversionService:
                 flush_table()
                 blocks.append(NormalizedBlock(kind="equation", text=_strip_math_delimiters(stripped)))
                 continue
+            image_match = re.fullmatch(r"!\[[^\]]*\]\(([^)]+)\)", stripped)
+            if image_match:
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                blocks.append(NormalizedBlock(kind="image", image_path=image_match.group(1).strip()))
+                continue
             if stripped.lower().startswith("<table"):
                 flush_paragraph()
                 flush_list()
@@ -831,14 +847,23 @@ class PDFConversionService:
         flush_table()
         return [block for block in blocks if _block_has_content(block)]
 
-    def _write_docx(self, blocks: list[NormalizedBlock], output_path: Path, *, base_dirs: list[Path]) -> None:
+    def _write_docx(
+        self,
+        blocks: list[NormalizedBlock],
+        output_path: Path,
+        *,
+        base_dirs: list[Path],
+        options: ConversionOptions | None = None,
+    ) -> None:
+        options = options or ConversionOptions()
         document = Document()
         styles = document.styles
         normal = styles["Normal"]
-        normal.font.name = "Arial"
-        normal.font.size = Pt(11)
+        normal.font.name = "Times New Roman" if options.exam_format else "Arial"
+        normal._element.rPr.rFonts.set(qn("w:eastAsia"), normal.font.name)
+        normal.font.size = Pt(14 if options.exam_format else 11)
 
-        for block in blocks:
+        for block in _format_exam_blocks(blocks) if options.exam_format else blocks:
             if block.kind == "title":
                 document.add_heading(block.text, level=max(1, min(block.level or 1, 4)))
             elif block.kind == "paragraph":
@@ -865,6 +890,9 @@ class PDFConversionService:
                 footnote = document.add_paragraph(block.footnote)
                 if footnote.runs:
                     footnote.runs[0].italic = True
+
+        if options.exam_format:
+            _apply_exam_document_format(document)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         document.save(output_path)
@@ -914,10 +942,12 @@ class PDFConversionService:
         if image_path and image_path.exists():
             try:
                 document.add_picture(str(image_path), width=Inches(6.0))
+                document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
             except Exception:
                 document.add_paragraph(f"[Khong the chen anh: {image_path.name}]")
         elif block.image_path:
-            document.add_paragraph(f"[Khong tim thay anh: {block.image_path}]")
+            paragraph = document.add_paragraph(f"[Không tìm thấy ảnh: {block.image_path}]")
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         if block.text:
             self._add_text_paragraph(document, block.text)
@@ -1220,6 +1250,165 @@ def _clamp_heading_level(value: Any) -> int:
 
 def _block_has_content(block: NormalizedBlock) -> bool:
     return bool(block.text or block.items or block.table_html or block.image_path or block.caption)
+
+
+def _format_exam_blocks(blocks: list[NormalizedBlock]) -> list[NormalizedBlock]:
+    formatted: list[NormalizedBlock] = []
+    option_buffer: list[NormalizedBlock] = []
+
+    def flush_options() -> None:
+        nonlocal option_buffer
+        if option_buffer:
+            formatted.extend(_layout_exam_options(option_buffer))
+            option_buffer = []
+
+    for block in blocks:
+        if block.kind == "paragraph" and _is_exam_option(block.text):
+            option_buffer.append(block)
+            if len(option_buffer) == 4:
+                flush_options()
+            continue
+        flush_options()
+        formatted.append(block)
+    flush_options()
+    return formatted
+
+
+def _layout_exam_options(options: list[NormalizedBlock]) -> list[NormalizedBlock]:
+    texts = [block.text.strip() for block in options]
+    max_len = max((_plain_length(_option_body(text)) for text in texts), default=0)
+    if max_len > 38:
+        per_line = 1
+    elif max_len > 10:
+        per_line = 2
+    else:
+        per_line = 4
+
+    rows: list[NormalizedBlock] = []
+    for index in range(0, len(texts), per_line):
+        separator = "\t\t" if per_line == 2 else "\t"
+        rows.append(NormalizedBlock(kind="paragraph", text=separator.join(texts[index : index + per_line])))
+    return rows
+
+
+def _is_exam_option(text: str) -> bool:
+    return bool(re.match(r"^[A-D]\.\s+", text.strip()))
+
+
+def _option_body(text: str) -> str:
+    return re.sub(r"^[A-D]\.\s+", "", text.strip())
+
+
+def _plain_length(text: str) -> int:
+    text = _strip_math_delimiters(text)
+    text = re.sub(r"\\(?:frac|dfrac|tfrac)\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"\1/\2", text)
+    text = re.sub(r"\\(?:vec|overrightarrow)\s*\{([^{}]*)\}", r"\1", text)
+    text = re.sub(r"\\[A-Za-z]+", "", text)
+    text = re.sub(r"[{}\\]", "", text)
+    return len(text.strip())
+
+
+def _apply_exam_document_format(document: Document) -> None:
+    for section in document.sections:
+        section.left_margin = Cm(1.7)
+        section.right_margin = Cm(1.7)
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+    for paragraph in document.paragraphs:
+        _apply_exam_paragraph_format(paragraph)
+    for table in document.tables:
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    _apply_exam_paragraph_format(paragraph, in_table=True)
+
+
+def _apply_exam_paragraph_format(paragraph: Any, *, in_table: bool = False) -> None:
+    fmt = paragraph.paragraph_format
+    fmt.line_spacing = 1.5
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if in_table else WD_ALIGN_PARAGRAPH.JUSTIFY
+    text = paragraph.text
+    if "\t" in text:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        stops = fmt.tab_stops
+        if "\t\t" in text:
+            stops.add_tab_stop(Cm(8.2))
+        else:
+            stops.add_tab_stop(Cm(3.8))
+            stops.add_tab_stop(Cm(7.6))
+            stops.add_tab_stop(Cm(11.4))
+    for run in paragraph.runs:
+        run.font.name = "Times New Roman"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+        run.font.size = Pt(14)
+    _style_exam_labels(paragraph)
+
+
+def _style_exam_labels(paragraph: Any) -> None:
+    text = paragraph.text
+    question_match = re.match(r"^(Câu\s+\d+\s*[.:)])", text, flags=re.IGNORECASE)
+    if question_match:
+        _style_text_prefix(paragraph, len(question_match.group(1)), bold=True, italic=True)
+    for match in re.finditer(r"(^|\t)([A-D][.)])", text):
+        _style_text_range(paragraph, match.start(2), match.end(2), bold=True)
+
+
+def _style_text_prefix(paragraph: Any, length: int, *, bold: bool = False, italic: bool = False) -> None:
+    _style_text_range(paragraph, 0, length, bold=bold, italic=italic)
+
+
+def _style_text_range(paragraph: Any, start: int, end: int, *, bold: bool = False, italic: bool = False) -> None:
+    cursor = 0
+    for run in list(paragraph.runs):
+        run_text = run.text or ""
+        run_len = len(run_text)
+        overlap_start = max(start, cursor)
+        overlap_end = min(end, cursor + run_len)
+        if overlap_start < overlap_end:
+            local_start = overlap_start - cursor
+            local_end = overlap_end - cursor
+            if local_start == 0 and local_end == run_len:
+                if bold:
+                    run.bold = True
+                if italic:
+                    run.italic = True
+            else:
+                _split_and_style_run(run, local_start, local_end, bold=bold, italic=italic)
+        cursor += run_len
+
+
+def _split_and_style_run(run: Any, start: int, end: int, *, bold: bool = False, italic: bool = False) -> None:
+    text = run.text or ""
+    before, middle, after = text[:start], text[start:end], text[end:]
+    run.text = before
+    styled = run._parent.add_run(middle)
+    _copy_run_style(run, styled)
+    if bold:
+        styled.bold = True
+    if italic:
+        styled.italic = True
+    if after:
+        trailing = run._parent.add_run(after)
+        _copy_run_style(run, trailing)
+    paragraph_element = run._parent._p
+    base = run._r
+    if after:
+        paragraph_element.remove(trailing._r)
+        base.addnext(trailing._r)
+    paragraph_element.remove(styled._r)
+    base.addnext(styled._r)
+
+
+def _copy_run_style(source: Any, target: Any) -> None:
+    target.bold = source.bold
+    target.italic = source.italic
+    target.underline = source.underline
+    target.font.name = source.font.name
+    target.font.size = source.font.size
+    target._element.rPr.rFonts.set(qn("w:eastAsia"), source.font.name or "Times New Roman")
 
 
 def _append_formatted_text(paragraph: Any, text: str) -> None:
