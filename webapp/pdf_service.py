@@ -187,6 +187,8 @@ class NormalizedBlock:
     footnote: str = ""
     language: str = ""
     page_idx: int | None = None
+    bbox: list[float] = field(default_factory=list)
+    rich_content: list[dict[str, Any]] = field(default_factory=list)
 
 
 class PDFConversionService:
@@ -361,7 +363,7 @@ class PDFConversionService:
         self._write_docx(
             blocks,
             docx_path,
-            base_dirs=[mineru_output_dir, source_path.parent if source_path else mineru_output_dir],
+            base_dirs=[mineru_output_dir, source_path.parent if source_path else mineru_output_dir, submission.input_path.parent],
             options=submission.options,
         )
 
@@ -540,7 +542,7 @@ class PDFConversionService:
         blocks: list[NormalizedBlock] = []
         pages = _as_pages(data)
         for page_idx, page_items in enumerate(pages):
-            for item in page_items:
+            for item in sorted(page_items, key=_reading_order_key):
                 if not isinstance(item, dict):
                     continue
                 kind = str(item.get("type") or "").strip()
@@ -567,8 +569,15 @@ class PDFConversionService:
                 page_idx=page_idx,
             )
         if kind == "paragraph":
-            text = _rich_text_to_plain(content.get("paragraph_content"))
-            return NormalizedBlock(kind="paragraph", text=text, page_idx=page_idx) if text else None
+            rich_content = _rich_segments(content.get("paragraph_content"))
+            text = _rich_segments_to_text(rich_content)
+            return NormalizedBlock(
+                kind="paragraph",
+                text=text,
+                page_idx=page_idx,
+                bbox=_bbox(raw_item),
+                rich_content=rich_content,
+            ) if text else None
         if kind in {"list", "index"}:
             items = _to_string_list(content.get("list_items"))
             if not items:
@@ -577,11 +586,12 @@ class PDFConversionService:
             return NormalizedBlock(kind="list", items=items, page_idx=page_idx) if items else None
         if kind in {"equation_interline", "equation"}:
             text = _rich_text_to_plain(_first(content, "math_content", "equation_content", "text", "content"))
-            return NormalizedBlock(kind="equation", text=text, page_idx=page_idx) if text else None
+            image_path = _image_source_path(content) or str(raw_item.get("img_path") or "")
+            return NormalizedBlock(kind="equation", text=text, image_path=image_path, page_idx=page_idx, bbox=_bbox(raw_item)) if text else None
         if kind in {"image", "chart"}:
             caption = _rich_text_to_plain(_first(content, f"{kind}_caption", "caption"))
             footnote = _rich_text_to_plain(_first(content, f"{kind}_footnote", "footnote"))
-            image_path = str(_first(content, "image_path", "img_path", "path") or raw_item.get("img_path") or "")
+            image_path = _image_source_path(content) or str(_first(content, "image_path", "img_path", "path") or raw_item.get("img_path") or "")
             extracted = _rich_text_to_plain(_first(content, f"{kind}_content", "content"))
             return NormalizedBlock(
                 kind=kind,
@@ -590,12 +600,13 @@ class PDFConversionService:
                 caption=caption,
                 footnote=footnote,
                 page_idx=page_idx,
+                bbox=_bbox(raw_item),
             )
         if kind == "table":
             caption = _rich_text_to_plain(_first(content, "table_caption", "caption"))
             footnote = _rich_text_to_plain(_first(content, "table_footnote", "footnote"))
             table_html = str(_first(content, "table_body", "table_html", "html") or "")
-            image_path = str(_first(content, "image_path", "img_path", "path") or raw_item.get("img_path") or "")
+            image_path = _image_source_path(content) or str(_first(content, "image_path", "img_path", "path") or raw_item.get("img_path") or "")
             fallback_text = _rich_text_to_plain(_first(content, "table_content", "content"))
             return NormalizedBlock(
                 kind="table",
@@ -605,6 +616,7 @@ class PDFConversionService:
                 caption=caption,
                 footnote=footnote,
                 page_idx=page_idx,
+                bbox=_bbox(raw_item),
             )
         if kind in {"code", "algorithm"}:
             code = _rich_text_to_plain(_first(content, "code_content", "algorithm_content", "code_body", "content"))
@@ -807,12 +819,19 @@ class PDFConversionService:
                 flush_table()
                 blocks.append(NormalizedBlock(kind="equation", text=_strip_math_delimiters(stripped)))
                 continue
-            image_match = re.fullmatch(r"!\[[^\]]*\]\(([^)]+)\)", stripped)
+            image_match = re.fullmatch(r'!\[[^\]]*\]\(\s*<?([^)>]+)>?(?:\s+"[^"]*")?\s*\)', stripped)
             if image_match:
                 flush_paragraph()
                 flush_list()
                 flush_table()
                 blocks.append(NormalizedBlock(kind="image", image_path=image_match.group(1).strip()))
+                continue
+            html_image_match = re.fullmatch(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"'][^>]*>", stripped, flags=re.IGNORECASE)
+            if html_image_match:
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                blocks.append(NormalizedBlock(kind="image", image_path=html_image_match.group(1).strip()))
                 continue
             if stripped.lower().startswith("<table"):
                 flush_paragraph()
@@ -867,7 +886,7 @@ class PDFConversionService:
             if block.kind == "title":
                 document.add_heading(block.text, level=max(1, min(block.level or 1, 4)))
             elif block.kind == "paragraph":
-                self._add_text_paragraph(document, block.text)
+                self._add_text_paragraph(document, block.text, rich_content=block.rich_content)
             elif block.kind == "list":
                 for item in block.items:
                     if item.strip():
@@ -897,8 +916,11 @@ class PDFConversionService:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         document.save(output_path)
 
-    def _add_text_paragraph(self, document: Document, text: str) -> None:
+    def _add_text_paragraph(self, document: Document, text: str, *, rich_content: list[dict[str, Any]] | None = None) -> None:
         paragraph = document.add_paragraph()
+        if rich_content:
+            _append_rich_content(paragraph, rich_content)
+            return
         _append_text_with_math(paragraph, text)
 
     def _add_equation_block(self, document: Document, latex: str) -> None:
@@ -1198,6 +1220,60 @@ def _first(mapping: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _rich_segments(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        text = _rich_text_to_plain(value)
+        return [{"type": "text", "content": text}] if text else []
+    segments: list[dict[str, str]] = []
+    for item in value:
+        if isinstance(item, dict):
+            kind = str(item.get("type") or "text")
+            content = _rich_text_to_plain(item.get("content"))
+            if content:
+                segments.append({"type": kind, "content": content})
+        else:
+            content = _rich_text_to_plain(item)
+            if content:
+                segments.append({"type": "text", "content": content})
+    return segments
+
+
+def _rich_segments_to_text(segments: list[dict[str, str]]) -> str:
+    pieces: list[str] = []
+    for segment in segments:
+        content = segment.get("content", "")
+        if not content:
+            continue
+        if segment.get("type", "").startswith("equation"):
+            pieces.append(f"\\({content}\\)")
+        else:
+            pieces.append(content)
+    return re.sub(r"\s+", " ", "".join(pieces)).strip()
+
+
+def _image_source_path(content: dict[str, Any]) -> str:
+    image_source = content.get("image_source")
+    if isinstance(image_source, dict):
+        return str(image_source.get("path") or image_source.get("image_path") or image_source.get("img_path") or "")
+    if isinstance(image_source, str):
+        return image_source
+    return ""
+
+
+def _bbox(item: dict[str, Any]) -> list[float]:
+    bbox = item.get("bbox")
+    if isinstance(bbox, list):
+        return [float(value) for value in bbox if isinstance(value, (int, float))]
+    return []
+
+
+def _reading_order_key(item: dict[str, Any]) -> tuple[float, float]:
+    bbox = _bbox(item)
+    if len(bbox) >= 2:
+        return (bbox[1], bbox[0])
+    return (0.0, 0.0)
+
+
 def _rich_text_to_plain(value: Any) -> str:
     if value is None:
         return ""
@@ -1209,6 +1285,11 @@ def _rich_text_to_plain(value: Any) -> str:
         pieces = [_rich_text_to_plain(item) for item in value]
         return re.sub(r"\s+", " ", " ".join(piece for piece in pieces if piece)).strip()
     if isinstance(value, dict):
+        image_source = value.get("image_source")
+        if isinstance(image_source, dict):
+            path = _rich_text_to_plain(image_source.get("path"))
+            if path:
+                return path
         for key in (
             "content",
             "text",
@@ -1436,7 +1517,19 @@ def _append_formatted_text(paragraph: Any, text: str) -> None:
             run.font.name = "Consolas"
             run.font.size = Pt(10)
         else:
-            run.text = part
+            run.text = part.replace("\\{", "{").replace("\\}", "}")
+
+
+def _append_rich_content(paragraph: Any, segments: list[dict[str, Any]]) -> None:
+    for segment in segments:
+        kind = str(segment.get("type") or "text")
+        content = str(segment.get("content") or "")
+        if not content:
+            continue
+        if kind.startswith("equation"):
+            _append_math(paragraph, content, display=False)
+        else:
+            _append_text_with_math(paragraph, content)
 
 
 def _append_text_with_math(paragraph: Any, text: str) -> None:
@@ -1595,6 +1688,7 @@ def _latex_as_text(latex: str, *, display: bool) -> str:
     text = re.sub(r"\\prime\b", "′", text)
     text = text.replace("\\infty", "∞").replace("\\pi", "π")
     text = text.replace("\\square", "ℝ").replace("\\setminus", "\\")
+    text = text.replace("\\{", "{").replace("\\}", "}")
     if display:
         return f"[{text}]"
     return text
@@ -1779,11 +1873,22 @@ def _resolve_artifact_path(raw_path: str, base_dirs: list[Path]) -> Path | None:
     if path.is_absolute():
         return path
     normalized = raw_path.replace("\\", "/").lstrip("/")
+    filename = Path(normalized).name
+    search_roots: list[Path] = []
     for base_dir in base_dirs:
+        if base_dir and base_dir not in search_roots:
+            search_roots.append(base_dir)
+        for parent in list(base_dir.parents)[:3] if base_dir else []:
+            if parent not in search_roots:
+                search_roots.append(parent)
+    for base_dir in search_roots:
         candidate = base_dir / normalized
         if candidate.exists():
             return candidate
-        matches = list(base_dir.rglob(Path(normalized).name))
+        image_candidate = base_dir / "images" / filename
+        if image_candidate.exists():
+            return image_candidate
+        matches = list(base_dir.rglob(filename))
         if matches:
             return matches[0]
     return None
