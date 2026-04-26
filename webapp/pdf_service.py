@@ -1166,17 +1166,14 @@ def _append_text_with_math(paragraph: Any, text: str) -> None:
 
 
 def _append_math(paragraph: Any, latex: str, *, display: bool) -> None:
-    latex = _strip_math_delimiters(latex)
+    latex = _normalize_latex(_strip_math_delimiters(latex))
     if not latex:
         return
     omml_xml = _latex_to_omml_xml(latex)
     if omml_xml:
-        try:
-            paragraph._p.append(parse_xml(_ensure_omml_namespaces(omml_xml)))
-            return
-        except Exception:
-            pass
-    paragraph._p.append(_fallback_omml(latex, display=display))
+        paragraph._p.append(parse_xml(_ensure_omml_namespaces(omml_xml)))
+        return
+    paragraph.add_run(_latex_as_text(latex, display=display))
 
 
 def _latex_to_omml_xml(latex: str) -> str | None:
@@ -1190,7 +1187,9 @@ def _latex_to_omml_xml(latex: str) -> str | None:
         convert = getattr(mathml2omml, "convert", None)
         if convert is None:
             return None
-        return str(convert(mathml, html.entities.name2codepoint))
+        omml_xml = str(convert(mathml, html.entities.name2codepoint))
+        parse_xml(_ensure_omml_namespaces(omml_xml))
+        return omml_xml
     except Exception:
         return None
 
@@ -1205,19 +1204,25 @@ def _ensure_omml_namespaces(omml_xml: str) -> str:
     return omml_xml
 
 
-def _fallback_omml(latex: str, *, display: bool) -> Any:
-    math = OxmlElement("m:oMath")
-    run = OxmlElement("m:r")
-    text = OxmlElement("m:t")
-    text.text = latex
-    run.append(text)
-    math.append(run)
-    if not display:
-        return math
+def _normalize_latex(latex: str) -> str:
+    text = re.sub(r"\\(?=[$%&_{}#])", "", latex.strip())
+    replacements = {
+        "\\leq": r"\\le",
+        "\\geq": r"\\ge",
+        "\\neq": r"\\ne",
+        "\\to": r"\\rightarrow",
+        "\\dfrac": r"\\frac",
+        "\\tfrac": r"\\frac",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return text
 
-    math_para = OxmlElement("m:oMathPara")
-    math_para.append(math)
-    return math_para
+
+def _latex_as_text(latex: str, *, display: bool) -> str:
+    if display:
+        return f"[{latex}]"
+    return latex
 
 
 def _split_math_segments(text: str) -> list[tuple[bool, str, bool]]:
@@ -1243,13 +1248,39 @@ def _split_math_segments(text: str) -> list[tuple[bool, str, bool]]:
 
 def _find_next_math_start(text: str, start_at: int) -> tuple[int, str, str, bool] | None:
     candidates: list[tuple[int, str, str, bool]] = []
-    for left, right, display in (("$$", "$$", True), ("\\[", "\\]", True), ("\\(", "\\)", False), ("$", "$", False)):
+    for left, right, display in (("$$", "$$", True), ("\\[", "\\]", True), ("\\(", "\\)", False)):
         index = _find_unescaped(text, left, start_at)
         if index is not None:
             candidates.append((index, left, right, display))
+
+    dollar_index = _find_inline_dollar_start(text, start_at)
+    if dollar_index is not None:
+        candidates.append((dollar_index, "$", "$", False))
+
     if not candidates:
         return None
     return min(candidates, key=lambda candidate: candidate[0])
+
+
+def _find_inline_dollar_start(text: str, start_at: int) -> int | None:
+    index = _find_unescaped(text, "$", start_at)
+    while index is not None:
+        if _is_probable_inline_math_dollar(text, index):
+            return index
+        index = _find_unescaped(text, "$", index + 1)
+    return None
+
+
+def _is_probable_inline_math_dollar(text: str, index: int) -> bool:
+    if index + 1 >= len(text) or text[index + 1].isspace() or text[index + 1] == "$":
+        return False
+    end_index = _find_unescaped(text, "$", index + 1)
+    if end_index is None or end_index == index + 1:
+        return False
+    if text[end_index - 1].isspace():
+        return False
+    content = text[index + 1 : end_index]
+    return bool(re.search(r"\\[A-Za-z]+|[_^{}=+*/<>]|\d\s*[=+*/^_-]|[A-Za-z]\s*[_^=]", content))
 
 
 def _find_unescaped(text: str, needle: str, start_at: int) -> int | None:
@@ -1279,9 +1310,11 @@ def _is_display_math_line(text: str) -> bool:
 
 def _strip_math_delimiters(text: str) -> str:
     stripped = text.strip()
-    for left, right in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
+    for left, right in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)")):
         if stripped.startswith(left) and stripped.endswith(right) and len(stripped) > len(left) + len(right):
             return stripped[len(left) : -len(right)].strip()
+    if stripped.startswith("$") and stripped.endswith("$") and _is_probable_inline_math_dollar(stripped, 0):
+        return stripped[1:-1].strip()
     return stripped
 
 

@@ -18,6 +18,7 @@ from webapp.pdf_service import (
     NormalizedBlock,
     PDFConversionService,
     _mineru_cli_from_python,
+    _split_math_segments,
 )
 
 
@@ -119,6 +120,17 @@ Inline \\(a+b\\) text.
     assert ">b<" in document_xml
     assert ">c<" in document_xml
     assert ">d<" in document_xml
+    assert "\\(a+b\\)" not in document_xml
+    assert "\\[c=d\\]" not in document_xml
+
+
+def test_plain_dollar_text_is_not_treated_as_math() -> None:
+    assert _split_math_segments("The price is $5 and $10.") == [(False, "The price is $5 and $10.", False)]
+    assert _split_math_segments("Use $x^2 + y^2$ here.") == [
+        (False, "Use ", False),
+        (True, "x^2 + y^2", False),
+        (False, " here.", False),
+    ]
 
 
 def test_run_mineru_passes_cli_options_and_config(monkeypatch, tmp_path: Path) -> None:
