@@ -17,6 +17,7 @@ from webapp.pdf_service import (
     ConversionOptions,
     NormalizedBlock,
     PDFConversionService,
+    _format_exam_blocks,
     _mineru_cli_from_python,
     _split_math_segments,
 )
@@ -72,6 +73,115 @@ def test_legacy_content_list_normalizes_core_blocks(tmp_path: Path) -> None:
     assert blocks[1].items == ["First", "Second"]
     assert blocks[2].kind == "equation"
     assert blocks[3].kind == "code"
+
+
+def test_nested_text_metadata_is_not_rendered_as_content(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    data = [
+        {
+            "type": "list",
+            "list_items": [
+                {
+                    "type": "text",
+                    "bbox": [1, 2, 3, 4],
+                    "lines": [
+                        {
+                            "bbox": [1, 2, 3, 4],
+                            "spans": [
+                                {
+                                    "type": "text",
+                                    "bbox": [1, 2, 3, 4],
+                                    "content": "a) Tại thời điểm bắt đầu phát hành video.",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "page_idx": 0,
+        }
+    ]
+
+    blocks, _ = service._normalize_content_list_legacy(data)
+
+    assert blocks[0].items == ["a) Tại thời điểm bắt đầu phát hành video."]
+
+
+def test_v2_list_item_content_does_not_render_item_type(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    data = [
+        [
+            {
+                "type": "list",
+                "content": {
+                    "list_type": "text_list",
+                    "list_items": [
+                        {
+                            "item_type": "text",
+                            "item_content": [
+                                {
+                                    "type": "text",
+                                    "content": "a) Tại thời điểm bắt đầu phát hành video.",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    ]
+
+    blocks, _ = service._normalize_content_list_v2(data)
+
+    assert blocks[0].items == ["a) Tại thời điểm bắt đầu phát hành video."]
+
+
+def test_explicit_lettered_list_items_are_not_bulleted(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    output_path = tmp_path / "lettered.docx"
+
+    service._write_docx(
+        [NormalizedBlock(kind="list", items=["a) First option", "b) Second option"])],
+        output_path,
+        base_dirs=[tmp_path],
+    )
+
+    doc = Document(output_path)
+    assert [paragraph.text for paragraph in doc.paragraphs] == ["a) First option", "b) Second option"]
+    assert all(paragraph.style.name != "List Bullet" for paragraph in doc.paragraphs)
+
+
+def test_exam_options_are_spaced_sorted_and_wrapped_by_length() -> None:
+    short = [
+        NormalizedBlock(kind="paragraph", text="A. x=1."),
+        NormalizedBlock(kind="paragraph", text="D.x=4."),
+        NormalizedBlock(kind="paragraph", text="B.x=2."),
+        NormalizedBlock(kind="paragraph", text="C.x=3."),
+    ]
+    medium = [
+        NormalizedBlock(kind="paragraph", text="A. y = x + 1."),
+        NormalizedBlock(kind="paragraph", text="B.y = x + 2026."),
+        NormalizedBlock(kind="paragraph", text="C.y = 2x + 2026."),
+        NormalizedBlock(kind="paragraph", text="D.y = 3x + 2026."),
+    ]
+    long = [
+        NormalizedBlock(kind="paragraph", text="A.This is a deliberately long option body that should stay alone."),
+        NormalizedBlock(kind="paragraph", text="B.This is a deliberately long option body that should stay alone."),
+        NormalizedBlock(kind="paragraph", text="C.This is a deliberately long option body that should stay alone."),
+        NormalizedBlock(kind="paragraph", text="D.This is a deliberately long option body that should stay alone."),
+    ]
+
+    rows = [block.text for block in _format_exam_blocks([*short, *medium, *long])]
+
+    assert rows[0] == "A. x=1.\tB. x=2.\tC. x=3.\tD. x=4."
+    assert rows[1] == "A. y = x + 1.\t\tB. y = x + 2026."
+    assert rows[2] == "C. y = 2x + 2026.\t\tD. y = 3x + 2026."
+    assert rows[3:] == [
+        "A. This is a deliberately long option body that should stay alone.",
+        "B. This is a deliberately long option body that should stay alone.",
+        "C. This is a deliberately long option body that should stay alone.",
+        "D. This is a deliberately long option body that should stay alone.",
+    ]
 
 
 def test_markdown_fallback_keeps_headings_lists_tables_and_code(tmp_path: Path) -> None:

@@ -21,7 +21,7 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Cm, Inches, Pt
+from docx.shared import Cm, Emu, Inches, Pt
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
@@ -876,6 +876,8 @@ class PDFConversionService:
     ) -> None:
         options = options or ConversionOptions()
         document = Document()
+        if options.exam_format:
+            _apply_exam_section_format(document)
         styles = document.styles
         normal = styles["Normal"]
         normal.font.name = "Times New Roman" if options.exam_format else "Arial"
@@ -890,8 +892,7 @@ class PDFConversionService:
             elif block.kind == "list":
                 for item in block.items:
                     if item.strip():
-                        paragraph = document.add_paragraph(style="List Bullet")
-                        _append_text_with_math(paragraph, item.strip())
+                        self._add_list_item(document, item.strip())
             elif block.kind == "table":
                 self._add_table_block(document, block, base_dirs)
             elif block.kind in {"image", "chart"}:
@@ -921,6 +922,13 @@ class PDFConversionService:
         if rich_content:
             _append_rich_content(paragraph, rich_content)
             return
+        _append_text_with_math(paragraph, text)
+
+    def _add_list_item(self, document: Document, text: str) -> None:
+        if _has_explicit_list_marker(text):
+            self._add_text_paragraph(document, text)
+            return
+        paragraph = document.add_paragraph(style="List Bullet")
         _append_text_with_math(paragraph, text)
 
     def _add_equation_block(self, document: Document, latex: str) -> None:
@@ -963,8 +971,11 @@ class PDFConversionService:
         image_path = _resolve_artifact_path(block.image_path, base_dirs)
         if image_path and image_path.exists():
             try:
-                document.add_picture(str(image_path), width=Inches(6.0))
-                document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                paragraph = document.add_paragraph()
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                width, height = _fit_image_size(image_path, document)
+                run = paragraph.add_run()
+                run.add_picture(str(image_path), width=width, height=height)
             except Exception:
                 document.add_paragraph(f"[Khong the chen anh: {image_path.name}]")
         elif block.image_path:
@@ -1228,7 +1239,7 @@ def _rich_segments(value: Any) -> list[dict[str, str]]:
     for item in value:
         if isinstance(item, dict):
             kind = str(item.get("type") or "text")
-            content = _rich_text_to_plain(item.get("content"))
+            content = _rich_text_to_plain(item.get("content") if "content" in item else item)
             if content:
                 segments.append({"type": kind, "content": content})
         else:
@@ -1302,12 +1313,32 @@ def _rich_text_to_plain(value: Any) -> str:
             "algorithm_content",
             "caption",
             "value",
+            "spans",
+            "lines",
+            "blocks",
+            "list_items",
+            "item_content",
         ):
             if key in value:
                 text = _rich_text_to_plain(value.get(key))
                 if text:
                     return text
-        pieces = [_rich_text_to_plain(item) for item in value.values()]
+        metadata_keys = {
+            "type",
+            "sub_type",
+            "bbox",
+            "angle",
+            "index",
+            "score",
+            "block_tags",
+            "content_tags",
+            "format",
+            "page_idx",
+            "page_size",
+            "item_type",
+            "list_type",
+        }
+        pieces = [_rich_text_to_plain(item) for key, item in value.items() if key not in metadata_keys]
         return re.sub(r"\s+", " ", " ".join(piece for piece in pieces if piece)).strip()
     return str(value).strip()
 
@@ -1349,6 +1380,10 @@ def _format_exam_blocks(blocks: list[NormalizedBlock]) -> list[NormalizedBlock]:
             if len(option_buffer) == 4:
                 flush_options()
             continue
+        if block.kind == "list" and block.items and all(_is_exam_option(item) for item in block.items):
+            flush_options()
+            formatted.extend(_layout_exam_options([NormalizedBlock(kind="paragraph", text=item) for item in block.items]))
+            continue
         flush_options()
         formatted.append(block)
     flush_options()
@@ -1356,7 +1391,7 @@ def _format_exam_blocks(blocks: list[NormalizedBlock]) -> list[NormalizedBlock]:
 
 
 def _layout_exam_options(options: list[NormalizedBlock]) -> list[NormalizedBlock]:
-    texts = [block.text.strip() for block in options]
+    texts = [_normalize_exam_option_text(block.text) for block in _sort_exam_options(options)]
     max_len = max((_plain_length(_option_body(text)) for text in texts), default=0)
     if max_len > 38:
         per_line = 1
@@ -1373,11 +1408,45 @@ def _layout_exam_options(options: list[NormalizedBlock]) -> list[NormalizedBlock
 
 
 def _is_exam_option(text: str) -> bool:
-    return bool(re.match(r"^[A-D]\.\s+", text.strip()))
+    return bool(_exam_option_match(text))
 
 
 def _option_body(text: str) -> str:
-    return re.sub(r"^[A-D]\.\s+", "", text.strip())
+    match = _exam_option_match(text)
+    return text.strip()[match.end() :].strip() if match else text.strip()
+
+
+def _has_explicit_list_marker(text: str) -> bool:
+    return bool(re.match(r"^(?:[A-Za-z]|\d+)[.)]\s*", text.strip()))
+
+
+def _exam_option_match(text: str) -> re.Match[str] | None:
+    return re.match(r"^([A-Da-d])([.)])\s*", text.strip())
+
+
+def _normalize_exam_option_text(text: str) -> str:
+    stripped = text.strip()
+    match = _exam_option_match(stripped)
+    if not match:
+        return stripped
+    marker = match.group(1).upper() if match.group(1).isupper() else match.group(1).lower()
+    punctuation = "." if marker.isupper() else match.group(2)
+    body = stripped[match.end() :].strip()
+    return f"{marker}{punctuation} {body}" if body else f"{marker}{punctuation}"
+
+
+def _sort_exam_options(options: list[NormalizedBlock]) -> list[NormalizedBlock]:
+    markers = [_exam_option_match(block.text) for block in options]
+    if len(options) == 4 and all(markers):
+        letters = [match.group(1).upper() for match in markers if match]
+        if sorted(letters) == ["A", "B", "C", "D"]:
+            return sorted(options, key=_exam_option_sort_key)
+    return options
+
+
+def _exam_option_sort_key(block: NormalizedBlock) -> str:
+    match = _exam_option_match(block.text)
+    return match.group(1).upper() if match else ""
 
 
 def _plain_length(text: str) -> int:
@@ -1390,11 +1459,7 @@ def _plain_length(text: str) -> int:
 
 
 def _apply_exam_document_format(document: Document) -> None:
-    for section in document.sections:
-        section.left_margin = Cm(1.7)
-        section.right_margin = Cm(1.7)
-        section.top_margin = Cm(2)
-        section.bottom_margin = Cm(2)
+    _apply_exam_section_format(document)
     for paragraph in document.paragraphs:
         _apply_exam_paragraph_format(paragraph)
     for table in document.tables:
@@ -1405,11 +1470,22 @@ def _apply_exam_document_format(document: Document) -> None:
                     _apply_exam_paragraph_format(paragraph, in_table=True)
 
 
+def _apply_exam_section_format(document: Document) -> None:
+    for section in document.sections:
+        section.left_margin = Cm(1.7)
+        section.right_margin = Cm(1.7)
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+
+
 def _apply_exam_paragraph_format(paragraph: Any, *, in_table: bool = False) -> None:
     fmt = paragraph.paragraph_format
     fmt.line_spacing = 1.5
     fmt.space_before = Pt(0)
     fmt.space_after = Pt(0)
+    if _paragraph_has_picture(paragraph):
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        return
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if in_table else WD_ALIGN_PARAGRAPH.JUSTIFY
     text = paragraph.text
     if "\t" in text:
@@ -1428,12 +1504,16 @@ def _apply_exam_paragraph_format(paragraph: Any, *, in_table: bool = False) -> N
     _style_exam_labels(paragraph)
 
 
+def _paragraph_has_picture(paragraph: Any) -> bool:
+    return bool(paragraph._p.xpath(".//pic:pic"))
+
+
 def _style_exam_labels(paragraph: Any) -> None:
     text = paragraph.text
     question_match = re.match(r"^(Câu\s+\d+\s*[.:)])", text, flags=re.IGNORECASE)
     if question_match:
         _style_text_prefix(paragraph, len(question_match.group(1)), bold=True, italic=True)
-    for match in re.finditer(r"(^|\t)([A-D][.)])", text):
+    for match in re.finditer(r"(^|\t)([A-Da-d][.)])\s*", text):
         _style_text_range(paragraph, match.start(2), match.end(2), bold=True)
 
 
@@ -1490,6 +1570,34 @@ def _copy_run_style(source: Any, target: Any) -> None:
     target.font.name = source.font.name
     target.font.size = source.font.size
     target._element.rPr.rFonts.set(qn("w:eastAsia"), source.font.name or "Times New Roman")
+
+
+def _fit_image_size(image_path: Path, document: Document) -> tuple[Emu, Emu | None]:
+    section = document.sections[-1]
+    available_width = section.page_width - section.left_margin - section.right_margin
+    max_width = min(available_width, Inches(6.8))
+    max_height = Inches(4.8)
+
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            width_px, height_px = image.size
+            dpi_x, dpi_y = image.info.get("dpi", (96, 96))
+    except Exception:
+        return Emu(max_width), None
+
+    if width_px <= 0 or height_px <= 0:
+        return Emu(max_width), None
+
+    dpi_x = dpi_x if isinstance(dpi_x, (int, float)) and dpi_x > 0 else 96
+    dpi_y = dpi_y if isinstance(dpi_y, (int, float)) and dpi_y > 0 else 96
+    native_width = Inches(width_px / dpi_x)
+    native_height = Inches(height_px / dpi_y)
+    scale = min(max_width / native_width, max_height / native_height, 1.0)
+    width = max(1, int(native_width * scale))
+    height = max(1, int(native_height * scale))
+    return Emu(width), Emu(height)
 
 
 def _append_formatted_text(paragraph: Any, text: str) -> None:

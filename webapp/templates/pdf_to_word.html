@@ -266,14 +266,28 @@
     resultPages.textContent = result.page_count ? String(result.page_count) : 'N/A';
 
     downloadStrip.innerHTML = '';
-    (result.artifacts || []).forEach(function (artifact) {
+    const docx = (result.artifacts || []).find(function (artifact) { return artifact.kind === 'docx'; });
+    [
+      {
+        href: result.docx_url || (docx && docx.download_url) || '#',
+        filename: result.download_name || (docx && docx.filename) || 'output.docx',
+        title: 'Tải DOCX',
+        subtitle: docx ? escapeHtml(docx.filename) + ' · ' + formatSize(docx.size_bytes) : 'File Word kết quả',
+        kind: 'docx'
+      },
+      {
+        href: result.artifacts_zip_url || '#',
+        filename: 'artifacts_without_docx.zip',
+        title: 'Tải ZIP artifact',
+        subtitle: 'Tất cả file output trừ DOCX',
+        kind: 'artifact'
+      }
+    ].forEach(function (item) {
       const link = document.createElement('a');
-      link.className = 'download-link ' + (artifact.kind || 'artifact');
-      link.href = artifact.download_url;
-      link.download = artifact.filename;
-      link.innerHTML =
-        '<strong>' + escapeHtml(artifact.label || artifact.filename) + '</strong>' +
-        '<span>' + escapeHtml(artifact.filename) + ' · ' + formatSize(artifact.size_bytes) + '</span>';
+      link.className = 'download-link ' + item.kind;
+      link.href = item.href;
+      link.download = item.filename;
+      link.innerHTML = '<strong>' + item.title + '</strong><span>' + item.subtitle + '</span>';
       downloadStrip.appendChild(link);
     });
 
@@ -374,6 +388,7 @@
             '<span>' + escapeHtml(item.backend_used || '') + ' · ' + Number(item.elapsed_seconds || 0).toFixed(2) + 's</span>' +
           '</div>' +
           '<a href="' + href + '" download>Tải DOCX</a>' +
+          '<a href="' + escapeHtml(item.artifacts_zip_url || '#') + '" download>Tải ZIP</a>' +
         '</article>'
       );
     }).join('');

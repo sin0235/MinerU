@@ -8,3 +8,4 @@ webapp_colab.log
 webapp_colab.pid
 cloudflared.log
 cloudflared.pid
+output_original_project/*

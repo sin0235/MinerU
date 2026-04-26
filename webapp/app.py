@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import zipfile
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_file, url_for
@@ -152,6 +153,7 @@ def _artifact_payload_with_urls(job_id: str, result: dict) -> dict:
     payload["artifacts"] = artifacts
     docx = next((artifact for artifact in artifacts if artifact.get("kind") == "docx"), None)
     payload["docx_url"] = docx["download_url"] if docx else ""
+    payload["artifacts_zip_url"] = url_for("download_artifacts_zip", job_id=job_id)
     return payload
 
 
@@ -269,6 +271,31 @@ def download_file(job_id: str, filename: str):
         abort(404, description="Khong tim thay file tai xuong.")
     guessed_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return send_file(path, mimetype=guessed_type, as_attachment=True, download_name=path.name)
+
+
+@app.route("/downloads/<job_id>/artifacts.zip")
+def download_artifacts_zip(job_id: str):
+    snapshot = job_manager.get_snapshot(job_id.strip())
+    if snapshot is None or snapshot.get("status") != "completed":
+        abort(404, description="Khong tim thay job da hoan thanh.")
+    result = snapshot.get("result") or {}
+    output_dir = Path(result.get("output_dir") or "")
+    if not output_dir.exists():
+        abort(404, description="Khong tim thay thu muc artifact.")
+
+    zip_path = output_dir.parent / "artifacts_without_docx.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in output_dir.parent.rglob("*"):
+            if not path.is_file() or path == zip_path or path.suffix.lower() == ".docx":
+                continue
+            archive.write(path, path.relative_to(output_dir.parent))
+
+    return send_file(
+        zip_path,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="artifacts_without_docx.zip",
+    )
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
