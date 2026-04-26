@@ -694,11 +694,13 @@ class PDFConversionService:
         paragraph_lines: list[str] = []
         list_items: list[str] = []
         table_lines: list[str] = []
+        html_table_lines: list[str] = []
         code_lines: list[str] = []
         math_lines: list[str] = []
         math_right_delimiter = ""
         in_code = False
         in_math = False
+        in_html_table = False
 
         def flush_paragraph() -> None:
             nonlocal paragraph_lines
@@ -719,6 +721,13 @@ class PDFConversionService:
                 blocks.append(NormalizedBlock(kind="table", table_html=_markdown_table_to_html(table_lines)))
             table_lines = []
 
+        def flush_html_table() -> None:
+            nonlocal html_table_lines
+            html_table = "\n".join(html_table_lines).strip()
+            if html_table:
+                blocks.append(NormalizedBlock(kind="table", table_html=html_table))
+            html_table_lines = []
+
         def flush_code() -> None:
             nonlocal code_lines
             code = "\n".join(code_lines).strip("\n")
@@ -735,6 +744,12 @@ class PDFConversionService:
 
         for line in markdown.splitlines():
             stripped = line.strip()
+            if in_html_table:
+                html_table_lines.append(line)
+                if "</table>" in stripped.lower():
+                    flush_html_table()
+                    in_html_table = False
+                continue
             if in_math:
                 math_lines.append(line)
                 if stripped.endswith(math_right_delimiter):
@@ -783,6 +798,16 @@ class PDFConversionService:
                 flush_table()
                 blocks.append(NormalizedBlock(kind="equation", text=_strip_math_delimiters(stripped)))
                 continue
+            if stripped.lower().startswith("<table"):
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                html_table_lines = [line]
+                if "</table>" in stripped.lower():
+                    flush_html_table()
+                else:
+                    in_html_table = True
+                continue
             list_match = re.match(r"^([-*+]|\d+[.)])\s+(.+)$", stripped)
             if list_match:
                 flush_paragraph()
@@ -800,6 +825,7 @@ class PDFConversionService:
 
         flush_code()
         flush_math()
+        flush_html_table()
         flush_paragraph()
         flush_list()
         flush_table()
@@ -1230,8 +1256,12 @@ def _append_text_with_math(paragraph: Any, text: str) -> None:
             continue
         if is_math:
             _append_math(paragraph, value, display=display)
-        else:
-            _append_formatted_text(paragraph, value)
+            continue
+        for implicit_is_math, implicit_value in _split_implicit_latex_segments(value):
+            if implicit_is_math:
+                _append_math(paragraph, implicit_value, display=False)
+            else:
+                _append_formatted_text(paragraph, implicit_value)
 
 
 def _append_math(paragraph: Any, latex: str, *, display: bool) -> None:
@@ -1241,6 +1271,8 @@ def _append_math(paragraph: Any, latex: str, *, display: bool) -> None:
     omml_xml = _latex_to_omml_xml(latex)
     if omml_xml:
         paragraph._p.append(parse_xml(_ensure_omml_namespaces(omml_xml)))
+        return
+    if _append_vector_latex_fallback(paragraph, latex):
         return
     paragraph.add_run(_latex_as_text(latex, display=display))
 
@@ -1261,6 +1293,62 @@ def _latex_to_omml_xml(latex: str) -> str | None:
         return omml_xml
     except Exception:
         return None
+
+
+def _append_vector_latex_fallback(paragraph: Any, latex: str) -> bool:
+    pattern = re.compile(r"\\(?:vec|overrightarrow)\s*\{(?:[^{}]|\{[^{}]*\})+\}")
+    if not pattern.search(latex):
+        return False
+    cursor = 0
+    appended = False
+    for match in pattern.finditer(latex):
+        if match.start() > cursor:
+            _append_text_with_math(paragraph, _latex_as_text(latex[cursor:match.start()], display=False))
+        vector_omml_xml = _vector_latex_to_omml_xml(match.group(0))
+        if vector_omml_xml:
+            paragraph._p.append(parse_xml(_ensure_omml_namespaces(vector_omml_xml)))
+            appended = True
+        else:
+            paragraph.add_run(_latex_as_text(match.group(0), display=False))
+        cursor = match.end()
+    if cursor < len(latex):
+        _append_text_with_math(paragraph, _latex_as_text(latex[cursor:], display=False))
+    return appended
+
+
+def _vector_latex_to_omml_xml(latex: str) -> str | None:
+    match = re.fullmatch(r"\\(?:vec|overrightarrow)\s*\{(.+)\}", latex.strip())
+    if not match:
+        return None
+    value = _latex_to_plain_math_text(match.group(1).strip())
+    if not value:
+        return None
+    escaped_value = _escape_xml_text(value)
+    return (
+        '<m:oMath>'
+        '<m:acc>'
+        '<m:accPr><m:chr m:val="⃗"/></m:accPr>'
+        f'<m:e><m:r><m:t>{escaped_value}</m:t></m:r></m:e>'
+        '</m:acc>'
+        '</m:oMath>'
+    )
+
+
+def _latex_to_plain_math_text(text: str) -> str:
+    text = re.sub(r"\^\s*\{\s*\\prime\s*\}", "′", text)
+    text = re.sub(r"\\prime\b", "′", text)
+    text = re.sub(r"\^\s*\{([^{}]+)\}", r"^\1", text)
+    text = re.sub(r"_\s*\{([^{}]+)\}", r"_\1", text)
+    return text
+
+
+def _escape_xml_text(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def _ensure_omml_namespaces(omml_xml: str) -> str:
@@ -1305,7 +1393,6 @@ def _normalize_latex(latex: str) -> str:
         "\\varnothing": r"\\emptyset",
         "\\geqslant": r"\\ge",
         "\\leqslant": r"\\le",
-        "\\overrightarrow": r"\\vec",
         "\\widehat": r"\\hat",
         "\\widetilde": r"\\tilde",
     }
@@ -1315,9 +1402,13 @@ def _normalize_latex(latex: str) -> str:
 
 
 def _latex_as_text(latex: str, *, display: bool) -> str:
+    text = re.sub(r"\^\s*\{\s*\\prime\s*\}", "′", latex)
+    text = re.sub(r"\\prime\b", "′", text)
+    text = text.replace("\\infty", "∞").replace("\\pi", "π")
+    text = text.replace("\\square", "ℝ").replace("\\setminus", "\\")
     if display:
-        return f"[{latex}]"
-    return latex
+        return f"[{text}]"
+    return text
 
 
 def _split_math_segments(text: str) -> list[tuple[bool, str, bool]]:
@@ -1339,6 +1430,37 @@ def _split_math_segments(text: str) -> list[tuple[bool, str, bool]]:
         segments.append((True, latex, display))
         index = end_index + len(right)
     return segments
+
+
+def _split_implicit_latex_segments(text: str) -> list[tuple[bool, str]]:
+    if not _looks_like_implicit_latex(text):
+        return [(False, text)]
+
+    segments: list[tuple[bool, str]] = []
+    cursor = 0
+    for match in re.finditer(r"\\[A-Za-z]+(?:\s*[_^]\s*(?:\{[^{}]*\}|[A-Za-z0-9+-]+)|\s*\{[^{}]*\}|\s*\([^()]*\)|\s*\[[^\[\]]*\])*|(?:[A-Za-z0-9]+|[xyz])(?:[_^]\s*\{[^{}]+\}|[_^]\s*[A-Za-z0-9+-]+)+", text):
+        start, end = match.span()
+        while start > cursor and text[start - 1] in "([{":
+            start -= 1
+        if text[start:end].startswith("\\int"):
+            differential = re.match(r"\s*d[A-Za-z]", text[end:])
+            if differential:
+                end += differential.end()
+        while end < len(text) and text[end] in ")]}.;,":
+            if text[end] in ".;," and (end + 1 >= len(text) or not text[end + 1].isspace()):
+                break
+            end += 1
+        if start > cursor:
+            segments.append((False, text[cursor:start]))
+        segments.append((True, text[start:end].strip()))
+        cursor = end
+    if cursor < len(text):
+        segments.append((False, text[cursor:]))
+    return [(is_math, value) for is_math, value in segments if value]
+
+
+def _looks_like_implicit_latex(text: str) -> bool:
+    return bool(re.search(r"\\(frac|sqrt|vec|overrightarrow|left|right|int|log|ln|sin|cos|tan|pi|infty|square|setminus|leq?|geq?|neq|mathbb|mathrm)\b|[A-Za-z0-9][_\^]\s*(?:\{|[A-Za-z0-9+-])", text))
 
 
 def _find_next_math_start(text: str, start_at: int) -> tuple[int, str, str, bool] | None:
