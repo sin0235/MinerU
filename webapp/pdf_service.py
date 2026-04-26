@@ -695,7 +695,10 @@ class PDFConversionService:
         list_items: list[str] = []
         table_lines: list[str] = []
         code_lines: list[str] = []
+        math_lines: list[str] = []
+        math_right_delimiter = ""
         in_code = False
+        in_math = False
 
         def flush_paragraph() -> None:
             nonlocal paragraph_lines
@@ -723,8 +726,30 @@ class PDFConversionService:
                 blocks.append(NormalizedBlock(kind="code", text=code))
             code_lines = []
 
+        def flush_math() -> None:
+            nonlocal math_lines
+            text = "\n".join(math_lines).strip()
+            if text:
+                blocks.append(NormalizedBlock(kind="equation", text=_strip_math_delimiters(text)))
+            math_lines = []
+
         for line in markdown.splitlines():
             stripped = line.strip()
+            if in_math:
+                math_lines.append(line)
+                if stripped.endswith(math_right_delimiter):
+                    flush_math()
+                    in_math = False
+                    math_right_delimiter = ""
+                continue
+            if stripped in {"$$", "\\["}:
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                math_lines = [line]
+                math_right_delimiter = "$$" if stripped == "$$" else "\\]"
+                in_math = True
+                continue
             if stripped.startswith("```"):
                 if in_code:
                     flush_code()
@@ -774,6 +799,7 @@ class PDFConversionService:
             paragraph_lines.append(stripped)
 
         flush_code()
+        flush_math()
         flush_paragraph()
         flush_list()
         flush_table()
@@ -1050,6 +1076,13 @@ def _latex_delimiter_config(delimiter_type: str) -> dict[str, dict[str, str]]:
             "display": {"left": "$$", "right": "$$"},
             "inline": {"left": "$", "right": "$"},
         }
+    if delimiter_type == "all":
+        return {
+            "display": {"left": "$$", "right": "$$"},
+            "inline": {"left": "$", "right": "$"},
+            "display_2": {"left": "\\[", "right": "\\]"},
+            "inline_2": {"left": "\\(", "right": "\\)"},
+        }
     return {
         "display": {"left": "\\[", "right": "\\]"},
         "inline": {"left": "\\(", "right": "\\)"},
@@ -1241,15 +1274,25 @@ def _ensure_omml_namespaces(omml_xml: str) -> str:
 
 
 def _normalize_latex(latex: str) -> str:
-    # Bo sung preprocessing de tuong thich tot hon voi latex2mathml
     text = latex.strip()
+    text = re.sub(r"\\tag\s*\{[^{}]*\}", "", text)
+    text = re.sub(r"\\label\s*\{[^{}]*\}", "", text)
+    text = re.sub(r"\\(displaystyle|textstyle|scriptstyle|scriptscriptstyle)\b", "", text)
+    text = re.sub(r"\\left\s*([.])", r"\\left\\1", text)
+    text = re.sub(r"\\right\s*([.])", r"\\right\\1", text)
+    text = text.replace("\\,", " ").replace("\\;", " ").replace("\\:", " ").replace("\\!", "")
+    text = re.sub(r"\\operatorname\s*\{([^{}]+)\}", r"\\mathrm{\1}", text)
+    text = re.sub(r"\\text\s*\{([^{}]*)\}", r"\\mathrm{\1}", text)
 
-    # Mot so environment MinerU tra ve co the thieu alignment block ma latex2mathml can
+    environments = ("aligned", "align", "align*", "gathered", "gather", "gather*", "split")
+    for environment in environments:
+        text = text.replace(f"\\begin{{{environment}}}", r"\\begin{array}{l}")
+        text = text.replace(f"\\end{{{environment}}}", r"\\end{array}")
+
     if "\\begin{cases}" in text and "\\begin{array}" not in text:
         text = text.replace("\\begin{cases}", "\\begin{cases} \\begin{array}{l}")
         text = text.replace("\\end{cases}", "\\end{array} \\end{cases}")
 
-    # Patch mot so lenh thong dung MinerU hay dung nhung converter bi loi
     replacements = {
         "\\leq": r"\\le",
         "\\geq": r"\\ge",
@@ -1257,11 +1300,18 @@ def _normalize_latex(latex: str) -> str:
         "\\to": r"\\rightarrow",
         "\\dfrac": r"\\frac",
         "\\tfrac": r"\\frac",
-        "\\unit{": r"\\text{",
+        "\\cfrac": r"\\frac",
+        "\\unit{": r"\\mathrm{",
+        "\\varnothing": r"\\emptyset",
+        "\\geqslant": r"\\ge",
+        "\\leqslant": r"\\le",
+        "\\overrightarrow": r"\\vec",
+        "\\widehat": r"\\hat",
+        "\\widetilde": r"\\tilde",
     }
     for source, target in replacements.items():
         text = text.replace(source, target)
-    return text
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _latex_as_text(latex: str, *, display: bool) -> str:
