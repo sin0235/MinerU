@@ -836,7 +836,15 @@ class PDFConversionService:
             table.style = "Table Grid"
             for row_idx, row in enumerate(matrix):
                 for col_idx in range(col_count):
-                    table.cell(row_idx, col_idx).text = row[col_idx] if col_idx < len(row) else ""
+                    cell = table.cell(row_idx, col_idx)
+                    text_content = row[col_idx] if col_idx < len(row) else ""
+                    # Xoa paragraph mac dinh va dung _append_text_with_math de ho tro LaTeX
+                    if cell.paragraphs:
+                        p = cell.paragraphs[0]
+                        p.clear()
+                    else:
+                        p = cell.add_paragraph()
+                    _append_text_with_math(p, text_content)
             document.add_paragraph()
             return
 
@@ -1155,6 +1163,34 @@ def _block_has_content(block: NormalizedBlock) -> bool:
     return bool(block.text or block.items or block.table_html or block.image_path or block.caption)
 
 
+def _append_formatted_text(paragraph: Any, text: str) -> None:
+    # Parser don gian cho inline markdown: **bold**, *italic*, `code`
+    # Dung regex de split text thanh cac segment co format
+    pattern = r"(\*\*\*.*?\*\*\*|\*\*.*?\*\*|\*.*?\*|__.*?__|__.*?__|_.*?_|\`.*?\`)"
+    parts = re.split(pattern, text)
+
+    for part in parts:
+        if not part:
+            continue
+        run = paragraph.add_run()
+        if (part.startswith("***") and part.endswith("***")) or (part.startswith("___") and part.endswith("___")):
+            run.text = part[3:-3]
+            run.bold = True
+            run.italic = True
+        elif (part.startswith("**") and part.endswith("**")) or (part.startswith("__") and part.endswith("__")):
+            run.text = part[2:-2]
+            run.bold = True
+        elif (part.startswith("*") and part.endswith("*")) or (part.startswith("_") and part.endswith("_")):
+            run.text = part[1:-1]
+            run.italic = True
+        elif part.startswith("`") and part.endswith("`"):
+            run.text = part[1:-1]
+            run.font.name = "Consolas"
+            run.font.size = Pt(10)
+        else:
+            run.text = part
+
+
 def _append_text_with_math(paragraph: Any, text: str) -> None:
     for is_math, value, display in _split_math_segments(text):
         if not value:
@@ -1162,7 +1198,7 @@ def _append_text_with_math(paragraph: Any, text: str) -> None:
         if is_math:
             _append_math(paragraph, value, display=display)
         else:
-            paragraph.add_run(value)
+            _append_formatted_text(paragraph, value)
 
 
 def _append_math(paragraph: Any, latex: str, *, display: bool) -> None:
@@ -1205,7 +1241,15 @@ def _ensure_omml_namespaces(omml_xml: str) -> str:
 
 
 def _normalize_latex(latex: str) -> str:
-    text = re.sub(r"\\(?=[$%&_{}#])", "", latex.strip())
+    # Bo sung preprocessing de tuong thich tot hon voi latex2mathml
+    text = latex.strip()
+
+    # Mot so environment MinerU tra ve co the thieu alignment block ma latex2mathml can
+    if "\\begin{cases}" in text and "\\begin{array}" not in text:
+        text = text.replace("\\begin{cases}", "\\begin{cases} \\begin{array}{l}")
+        text = text.replace("\\end{cases}", "\\end{array} \\end{cases}")
+
+    # Patch mot so lenh thong dung MinerU hay dung nhung converter bi loi
     replacements = {
         "\\leq": r"\\le",
         "\\geq": r"\\ge",
@@ -1213,6 +1257,7 @@ def _normalize_latex(latex: str) -> str:
         "\\to": r"\\rightarrow",
         "\\dfrac": r"\\frac",
         "\\tfrac": r"\\frac",
+        "\\unit{": r"\\text{",
     }
     for source, target in replacements.items():
         text = text.replace(source, target)

@@ -99,6 +99,37 @@ print("ok")
     assert "<table>" in blocks[3].table_html
 
 
+def test_table_and_markdown_formatting_in_docx(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    # Test case: Table with math and markdown
+    table_html = "<table><tr><td>**Bold** $x=1$</td><td>*Italic* \\(y=2\\)</td></tr></table>"
+    blocks = [
+        NormalizedBlock(kind="paragraph", text="Testing **bold** and *italic* and `code`."),
+        NormalizedBlock(kind="table", table_html=table_html),
+    ]
+
+    output_path = tmp_path / "format_test.docx"
+    service._write_docx(blocks, output_path, base_dirs=[tmp_path])
+
+    doc = Document(output_path)
+    # Verify paragraph formatting
+    p0 = doc.paragraphs[0]
+    # "Testing " (plain), "bold" (bold), " and " (plain), "italic" (italic), " and " (plain), "code" (code), "." (plain)
+    # Note: re.split might produce empty strings if separators are at the edges
+    runs = [r for r in p0.runs if r.text]
+    assert any(r.text == "bold" and r.bold for r in runs)
+    assert any(r.text == "italic" and r.italic for r in runs)
+    assert any(r.text == "code" and r.font.name == "Consolas" for r in runs)
+
+    # Verify table math
+    with zipfile.ZipFile(output_path) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+
+    assert "<m:oMath" in document_xml
+    assert "x=1" in document_xml or ">x<" in document_xml
+    assert "y=2" in document_xml or ">y<" in document_xml
+
+
 def test_markdown_latex_is_written_as_word_math(tmp_path: Path) -> None:
     service = PDFConversionService(tmp_path)
     blocks = service._normalize_markdown(
