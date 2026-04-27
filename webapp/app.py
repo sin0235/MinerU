@@ -70,8 +70,9 @@ def _is_api_request() -> bool:
 
 
 def _converter_options_payload() -> dict:
+    default_llm_model = _default_llm_model()
     return {
-        "default": ConversionOptions(backend=converter.resolve_backend()).to_payload(),
+        "default": ConversionOptions(backend=converter.resolve_backend(), llm_model=default_llm_model).to_payload(),
         "backends": ["auto", "pipeline", "hybrid-auto-engine", "vlm-auto-engine", "hybrid-http-client", "vlm-http-client"],
         "parse_methods": ["auto", "ocr", "txt"],
         "languages": [
@@ -104,7 +105,7 @@ def _converter_options_payload() -> dict:
             ("correct", "Tự sửa lỗi rõ ràng"),
         ],
         "llm_api_configured": bool((os.getenv("NVIDIA_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "").strip()),
-        "default_llm_model": DEFAULT_NVIDIA_LLM_MODEL,
+        "default_llm_model": default_llm_model,
         "llm_models": LLM_MODEL_OPTIONS,
     }
 
@@ -116,7 +117,8 @@ def _conversion_options_from_request() -> ConversionOptions:
     language = _choice("language", ALLOWED_LANGUAGES, "ch")
     latex_delimiters_type = _choice("latex_delimiters_type", ALLOWED_LATEX_DELIMITER_TYPES, "b")
     llm_mode = _choice("llm_mode", ALLOWED_LLM_MODES, "off")
-    llm_model = (form.get("llm_model") or DEFAULT_NVIDIA_LLM_MODEL).strip() or DEFAULT_NVIDIA_LLM_MODEL
+    default_llm_model = _default_llm_model()
+    llm_model = (form.get("llm_model") or default_llm_model).strip() or default_llm_model
     start_page_ui = _optional_int(form.get("start_page"), default=1, minimum=1, maximum=99999)
     end_page_ui = _optional_int(form.get("end_page"), default=None, minimum=1, maximum=99999)
     start_page = max(0, start_page_ui - 1)
@@ -159,6 +161,10 @@ def _llm_api_key_configured(model: str) -> bool:
     if model.strip().lower().startswith("openrouter/"):
         return bool((os.getenv("OPENROUTER_API_KEY") or "").strip())
     return bool((os.getenv("NVIDIA_API_KEY") or "").strip())
+
+
+def _default_llm_model() -> str:
+    return (os.getenv("PDF_WORD_LLM_MODEL") or DEFAULT_NVIDIA_LLM_MODEL).strip() or DEFAULT_NVIDIA_LLM_MODEL
 
 
 def _optional_int(raw: str | None, *, default: int | None, minimum: int, maximum: int) -> int | None:
