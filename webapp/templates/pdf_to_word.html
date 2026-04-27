@@ -89,7 +89,12 @@
           </label>
           <label>
             <span>LLM model</span>
-            <input id="llmModelInput" name="llm_model" type="text" value="{{ converter_options.default_llm_model }}" />
+            <input id="llmModelInput" name="llm_model" type="text" value="{{ converter_options.default_llm_model }}" list="llmModelOptions" />
+            <datalist id="llmModelOptions">
+              {% for value, label in converter_options.llm_models %}
+                <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
+            </datalist>
           </label>
         </div>
 
@@ -109,6 +114,10 @@
           <label>
             <input id="examFormatInput" name="exam_format" type="checkbox" />
             <span>Format đề thi trắc nghiệm</span>
+          </label>
+          <label>
+            <input id="llmReasoningInput" name="llm_reasoning" type="checkbox" />
+            <span>Bật reasoning OpenRouter</span>
           </label>
         </div>
 
@@ -651,6 +660,7 @@
     formData.set('server_url', document.getElementById('serverUrlInput').value.trim());
     formData.set('llm_mode', document.getElementById('llmModeInput').value);
     formData.set('llm_model', document.getElementById('llmModelInput').value.trim());
+    formData.set('llm_reasoning', document.getElementById('llmReasoningInput').checked ? 'true' : 'false');
     convertBtn.disabled = true;
     showRunning({ message: 'Đang đưa file vào hàng đợi...', status: 'queued', progress: 3, terminal_lines: [], elapsed_seconds: 0, eta_seconds: null, stage: 'queued' });
     try {

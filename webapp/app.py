@@ -21,6 +21,7 @@ try:
         ALLOWED_LLM_MODES,
         ALLOWED_PARSE_METHODS,
         DEFAULT_NVIDIA_LLM_MODEL,
+        LLM_MODEL_OPTIONS,
         ConversionJobManager,
         ConversionOptions,
         PDFConversionService,
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover
         ALLOWED_LLM_MODES,
         ALLOWED_PARSE_METHODS,
         DEFAULT_NVIDIA_LLM_MODEL,
+        LLM_MODEL_OPTIONS,
         ConversionJobManager,
         ConversionOptions,
         PDFConversionService,
@@ -101,8 +103,9 @@ def _converter_options_payload() -> dict:
             ("review", "Chỉ kiểm tra"),
             ("correct", "Tự sửa lỗi rõ ràng"),
         ],
-        "llm_api_configured": bool((os.getenv("NVIDIA_API_KEY") or "").strip()),
+        "llm_api_configured": bool((os.getenv("NVIDIA_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "").strip()),
         "default_llm_model": DEFAULT_NVIDIA_LLM_MODEL,
+        "llm_models": LLM_MODEL_OPTIONS,
     }
 
 
@@ -120,8 +123,9 @@ def _conversion_options_from_request() -> ConversionOptions:
     end_page = end_page_ui - 1 if end_page_ui is not None else None
     if end_page is not None and end_page < start_page:
         raise ValueError("Trang ket thuc phai lon hon hoac bang trang bat dau.")
-    if llm_mode != "off" and not (os.getenv("NVIDIA_API_KEY") or "").strip():
-        raise ValueError("Chua cau hinh NVIDIA_API_KEY nen khong the bat LLM review.")
+    if llm_mode != "off" and not _llm_api_key_configured(llm_model):
+        missing_key = "OPENROUTER_API_KEY" if llm_model.lower().startswith("openrouter/") else "NVIDIA_API_KEY"
+        raise ValueError(f"Chua cau hinh {missing_key} nen khong the bat LLM review.")
     return ConversionOptions(
         backend=backend,
         parse_method=parse_method,
@@ -135,6 +139,7 @@ def _conversion_options_from_request() -> ConversionOptions:
         exam_format=_form_bool("exam_format", default=False),
         llm_mode=llm_mode,
         llm_model=llm_model,
+        llm_reasoning=_form_bool("llm_reasoning", default=False),
     )
 
 
@@ -148,6 +153,12 @@ def _form_bool(name: str, *, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _llm_api_key_configured(model: str) -> bool:
+    if model.strip().lower().startswith("openrouter/"):
+        return bool((os.getenv("OPENROUTER_API_KEY") or "").strip())
+    return bool((os.getenv("NVIDIA_API_KEY") or "").strip())
 
 
 def _optional_int(raw: str | None, *, default: int | None, minimum: int, maximum: int) -> int | None:
@@ -354,11 +365,7 @@ def download_artifacts_zip(job_id: str):
         abort(404, description="Khong tim thay thu muc artifact.")
 
     zip_path = job_dir / "artifacts_without_docx.zip"
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in job_dir.rglob("*"):
-            if not path.is_file() or path.resolve() == zip_path or path.suffix.lower() == ".docx":
-                continue
-            archive.write(path, path.relative_to(job_dir))
+    _write_job_artifacts_zip(job_dir, zip_path)
 
     return send_file(
         zip_path,
@@ -366,6 +373,30 @@ def download_artifacts_zip(job_id: str):
         as_attachment=True,
         download_name="artifacts_without_docx.zip",
     )
+
+
+def _write_job_artifacts_zip(job_dir: Path, zip_path: Path) -> None:
+    job_dir = job_dir.resolve()
+    zip_path = zip_path.resolve()
+    archive_root = Path("runtime") / "jobs" / job_dir.name
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in job_dir.rglob("*"):
+            resolved = path.resolve()
+            if not path.is_file() or resolved == zip_path or path.suffix.lower() == ".docx":
+                continue
+            if not _is_relative_to(resolved, job_dir):
+                continue
+            relative_path = resolved.relative_to(job_dir)
+            archive.write(resolved, (archive_root / relative_path).as_posix())
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _docx_preview_html(path: Path, *, max_blocks: int = 220) -> str:

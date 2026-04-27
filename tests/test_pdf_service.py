@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import time
 import zipfile
@@ -8,16 +9,21 @@ from pathlib import Path
 
 from docx import Document
 
-from webapp.app import app
+from webapp.app import app, _write_job_artifacts_zip
 from webapp.pdf_service import (
     Artifact,
     ConversionJobManager,
     ConversionResult,
     ConversionSubmission,
     ConversionOptions,
+    LLM_MODEL_OPTIONS,
     NormalizedBlock,
+    OPENROUTER_CHAT_COMPLETIONS_URL,
     PDFConversionService,
     _format_exam_blocks,
+    _llm_api_key_env,
+    _llm_model_for_provider,
+    _llm_provider_for_model,
     _mineru_cli_from_python,
     _split_math_segments,
 )
@@ -354,6 +360,51 @@ def test_plain_dollar_text_is_not_treated_as_math() -> None:
     ]
 
 
+def test_openrouter_llm_model_mapping_and_request(monkeypatch, tmp_path: Path) -> None:
+    model = "openrouter/google/gemma-4-26b-a4b-it:free"
+    assert model in {value for value, _ in LLM_MODEL_OPTIONS}
+    assert _llm_provider_for_model(model) == "openrouter"
+    assert _llm_api_key_env("openrouter") == "OPENROUTER_API_KEY"
+    assert _llm_model_for_provider(model) == "google/gemma-4-26b-a4b-it:free"
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"{}","reasoning_details":[{"type":"reasoning.text","text":"checked"}]}}]}'
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("webapp.pdf_service.urllib.request.urlopen", fake_urlopen)
+
+    service = PDFConversionService(tmp_path)
+    response = service._call_llm_chat_completion(
+        [{"role": "user", "content": "ping"}],
+        model=model,
+        api_key="test-key",
+        reasoning=True,
+    )
+
+    assert response["content"] == "{}"
+    assert response["reasoning_details"] == [{"type": "reasoning.text", "text": "checked"}]
+    assert captured["url"] == OPENROUTER_CHAT_COMPLETIONS_URL
+    assert captured["payload"]["model"] == "google/gemma-4-26b-a4b-it:free"
+    assert captured["payload"]["reasoning"] == {"enabled": True}
+    assert captured["authorization"] == "Bearer test-key"
+    assert captured["timeout"] == 120
+
+
 def test_run_mineru_passes_cli_options_and_config(monkeypatch, tmp_path: Path) -> None:
     service = PDFConversionService(tmp_path)
     captured = {}
@@ -448,6 +499,23 @@ def test_api_rejects_non_pdf_upload() -> None:
 
     assert response.status_code == 400
     assert response.get_json()["ok"] is False
+
+
+def test_artifacts_zip_is_scoped_to_runtime_job_and_excludes_docx(tmp_path: Path) -> None:
+    job_id = "abc123"
+    job_dir = tmp_path / "webapp" / "runtime" / "jobs" / job_id
+    (job_dir / "mineru").mkdir(parents=True)
+    (job_dir / "docx").mkdir()
+    (job_dir / "mineru" / "result.md").write_text("ok", encoding="utf-8")
+    (job_dir / "docx" / "result.docx").write_bytes(b"docx")
+    zip_path = job_dir / "artifacts_without_docx.zip"
+
+    _write_job_artifacts_zip(job_dir, zip_path)
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = sorted(archive.namelist())
+
+    assert names == [f"runtime/jobs/{job_id}/mineru/result.md"]
 
 
 def test_readiness_blocks_python_314_env(monkeypatch, tmp_path: Path) -> None:

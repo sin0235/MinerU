@@ -67,7 +67,13 @@ ALLOWED_LANGUAGES = {
 ALLOWED_LATEX_DELIMITER_TYPES = {"a", "b", "all"}
 ALLOWED_LLM_MODES = {"off", "review", "correct"}
 DEFAULT_NVIDIA_LLM_MODEL = "google/gemma-3-27b-it"
+OPENROUTER_MODEL_PREFIX = "openrouter/"
+LLM_MODEL_OPTIONS = [
+    (DEFAULT_NVIDIA_LLM_MODEL, "NVIDIA: Gemma 3 27B IT"),
+    ("openrouter/google/gemma-4-26b-a4b-it:free", "OpenRouter: Gemma 4 26B A4B IT Free"),
+]
 NVIDIA_CHAT_COMPLETIONS_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 SKIPPED_CONTENT_TYPES = {
     "header",
     "footer",
@@ -96,6 +102,7 @@ class ConversionOptions:
     exam_format: bool = False
     llm_mode: str = "off"
     llm_model: str = DEFAULT_NVIDIA_LLM_MODEL
+    llm_reasoning: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -111,6 +118,7 @@ class ConversionOptions:
             "exam_format": self.exam_format,
             "llm_mode": self.llm_mode,
             "llm_model": self.llm_model,
+            "llm_reasoning": self.llm_reasoning,
         }
 
 
@@ -620,15 +628,29 @@ class PDFConversionService:
     ) -> tuple[list[NormalizedBlock], list[str]]:
         warnings: list[str] = []
         review_dir.mkdir(parents=True, exist_ok=True)
-        api_key = (os.getenv("NVIDIA_API_KEY") or "").strip()
+        model = options.llm_model or DEFAULT_NVIDIA_LLM_MODEL
+        provider = _llm_provider_for_model(model)
+        api_key = (os.getenv(_llm_api_key_env(provider)) or "").strip()
         if not api_key:
-            warnings.append("LLM review bi bo qua vi chua cau hinh NVIDIA_API_KEY.")
+            missing_env = _llm_api_key_env(provider)
+            warnings.append(f"LLM review bi bo qua vi chua cau hinh {missing_env}.")
             (review_dir / "review_report.md").write_text(
-                "# LLM Review\n\n- Status: skipped\n- Reason: NVIDIA_API_KEY is not configured\n",
+                f"# LLM Review\n\n- Status: skipped\n- Reason: {missing_env} is not configured\n",
                 encoding="utf-8",
             )
             (review_dir / "review_request_summary.json").write_text(
-                json.dumps({"mode": options.llm_mode, "skipped": True, "reason": "missing NVIDIA_API_KEY"}, ensure_ascii=False, indent=2),
+                json.dumps(
+                    {
+                        "mode": options.llm_mode,
+                        "model": model,
+                        "provider": provider,
+                        "reasoning_enabled": provider == "openrouter" and options.llm_reasoning,
+                        "skipped": True,
+                        "reason": f"missing {missing_env}",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
             return blocks, warnings
@@ -636,16 +658,20 @@ class PDFConversionService:
         chunks = _chunk_blocks_for_llm(blocks)
         findings: list[dict[str, Any]] = []
         proposed_patches: list[dict[str, Any]] = []
+        reasoning_details: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
         for chunk in chunks:
             try:
-                response = self._call_nvidia_chat_completion(
+                response = self._call_llm_chat_completion(
                     _build_llm_messages(chunk, mode=options.llm_mode),
-                    model=options.llm_model or DEFAULT_NVIDIA_LLM_MODEL,
+                    model=model,
                     api_key=api_key,
+                    reasoning=options.llm_reasoning,
                 )
-                parsed = _parse_llm_json_response(response)
+                if response.get("reasoning_details") is not None:
+                    reasoning_details.append({"chunk_index": chunk["chunk_index"], "reasoning_details": response["reasoning_details"]})
+                parsed = _parse_llm_json_response(response["content"])
                 findings.extend(parsed.get("findings") if isinstance(parsed.get("findings"), list) else [])
                 if options.llm_mode == "correct":
                     proposed_patches.extend(parsed.get("patches") if isinstance(parsed.get("patches"), list) else [])
@@ -666,6 +692,8 @@ class PDFConversionService:
         (review_dir / "proposed_patches.json").write_text(json.dumps(proposed_patches, ensure_ascii=False, indent=2), encoding="utf-8")
         (review_dir / "applied_patches.json").write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
         (review_dir / "rejected_patches.json").write_text(json.dumps(rejected, ensure_ascii=False, indent=2), encoding="utf-8")
+        if reasoning_details:
+            (review_dir / "reasoning_details.json").write_text(json.dumps(reasoning_details, ensure_ascii=False, indent=2), encoding="utf-8")
         if errors:
             (review_dir / "llm_errors.json").write_text(json.dumps(errors, ensure_ascii=False, indent=2), encoding="utf-8")
             warnings.append(f"LLM review co {len(errors)} chunk loi; xem llm_errors.json.")
@@ -674,7 +702,10 @@ class PDFConversionService:
             json.dumps(
                 {
                     "mode": options.llm_mode,
-                    "model": options.llm_model or DEFAULT_NVIDIA_LLM_MODEL,
+                    "model": model,
+                    "provider": provider,
+                    "reasoning_enabled": provider == "openrouter" and options.llm_reasoning,
+                    "reasoning_chunks": len(reasoning_details),
                     "chunk_count": len(chunks),
                     "block_count": len(blocks),
                     "findings": len(findings),
@@ -690,25 +721,44 @@ class PDFConversionService:
         )
         return updated_blocks, warnings
 
-    def _call_nvidia_chat_completion(self, messages: list[dict[str, str]], *, model: str, api_key: str) -> str:
-        payload = json.dumps(
-            {
-                "model": model,
-                "messages": messages,
-                "max_tokens": 2048,
-                "temperature": 0.0,
-                "top_p": 0.7,
-                "stream": False,
-            }
-        ).encode("utf-8")
+    def _call_llm_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str,
+        api_key: str,
+        reasoning: bool = False,
+    ) -> dict[str, Any]:
+        provider = _llm_provider_for_model(model)
+        provider_label = "OpenRouter" if provider == "openrouter" else "NVIDIA"
+        url = OPENROUTER_CHAT_COMPLETIONS_URL if provider == "openrouter" else NVIDIA_CHAT_COMPLETIONS_URL
+        payload_data: dict[str, Any] = {
+            "model": _llm_model_for_provider(model, provider),
+            "messages": messages,
+            "max_tokens": 2048,
+            "temperature": 0.0,
+            "top_p": 0.7,
+            "stream": False,
+        }
+        if provider == "openrouter" and reasoning:
+            payload_data["reasoning"] = {"enabled": True}
+        payload = json.dumps(payload_data).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if provider == "openrouter":
+            referer = (os.getenv("OPENROUTER_HTTP_REFERER") or "").strip()
+            app_name = (os.getenv("OPENROUTER_APP_NAME") or "MinerU PDF to Word").strip()
+            if referer:
+                headers["HTTP-Referer"] = referer
+            if app_name:
+                headers["X-Title"] = app_name
         request = urllib.request.Request(
-            NVIDIA_CHAT_COMPLETIONS_URL,
+            url,
             data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -716,11 +766,15 @@ class PDFConversionService:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise RuntimeError(f"NVIDIA LLM HTTP {exc.code}: {detail}") from exc
-        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            raise RuntimeError(f"{provider_label} LLM HTTP {exc.code}: {detail}") from exc
+        message = ((data.get("choices") or [{}])[0].get("message") or {})
+        content = (message.get("content") or "").strip()
         if not content:
-            raise RuntimeError("NVIDIA LLM tra ve noi dung rong.")
-        return content
+            raise RuntimeError(f"{provider_label} LLM tra ve noi dung rong.")
+        return {"content": content, "reasoning_details": message.get("reasoning_details")}
+
+    def _call_nvidia_chat_completion(self, messages: list[dict[str, str]], *, model: str, api_key: str) -> dict[str, Any]:
+        return self._call_llm_chat_completion(messages, model=model, api_key=api_key)
 
     def _mineru_command(self) -> list[str]:
         raw_command = (os.getenv("MINERU_COMMAND") or "").strip()
@@ -2412,6 +2466,22 @@ def _ensure_omml_namespaces(omml_xml: str) -> str:
         if omml_xml.startswith(prefix):
             return omml_xml.replace(prefix, f"{prefix} {nsdecls('m')}", 1)
     return omml_xml
+
+
+def _llm_provider_for_model(model: str) -> str:
+    return "openrouter" if model.strip().lower().startswith(OPENROUTER_MODEL_PREFIX) else "nvidia"
+
+
+def _llm_model_for_provider(model: str, provider: str | None = None) -> str:
+    text = model.strip() or DEFAULT_NVIDIA_LLM_MODEL
+    provider = provider or _llm_provider_for_model(text)
+    if provider == "openrouter" and text.lower().startswith(OPENROUTER_MODEL_PREFIX):
+        return text[len(OPENROUTER_MODEL_PREFIX) :]
+    return text
+
+
+def _llm_api_key_env(provider: str) -> str:
+    return "OPENROUTER_API_KEY" if provider == "openrouter" else "NVIDIA_API_KEY"
 
 
 def _normalize_latex(latex: str) -> str:
