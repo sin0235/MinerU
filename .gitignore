@@ -8,6 +8,11 @@ webapp_colab.log
 webapp_colab.pid
 cloudflared.log
 cloudflared.pid
-output_original_project/*
-.claude/*
+output_original_project/
+.claude/
 .pytest_tmp_codex2/
+*.ipynb
+.codex_pytest_tmp_2/
+.pytest_tmp_codex/
+.codex_pytest_tmp/
+rendered_docx/

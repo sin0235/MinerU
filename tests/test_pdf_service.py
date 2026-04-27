@@ -209,6 +209,86 @@ print("ok")
     assert "<table>" in blocks[3].table_html
 
 
+def test_markdown_details_blocks_are_not_rendered_to_docx(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    blocks = service._normalize_markdown(
+        """Text before.
+
+![](images/example.jpg)
+
+<details>
+<summary>natural_image</summary>
+
+Cross-sectional generated image description.
+</details>
+
+Text after.
+"""
+    )
+
+    assert not any("details" in block.text.lower() for block in blocks)
+    assert not any("natural_image" in block.text for block in blocks)
+    assert not any("Cross-sectional" in block.text for block in blocks)
+
+    output_path = tmp_path / "details.docx"
+    service._write_docx(blocks, output_path, base_dirs=[tmp_path])
+
+    with zipfile.ZipFile(output_path) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+
+    assert "natural_image" not in document_xml
+    assert "Cross-sectional" not in document_xml
+
+
+def test_image_content_descriptions_are_not_rendered_to_docx(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    blocks, _ = service._normalize_content_list_v2(
+        [
+            [
+                {
+                    "type": "image",
+                    "sub_type": "natural_image",
+                    "content": {
+                        "image_source": {"path": "images/example.jpg"},
+                        "content": "Cross-sectional generated image description.",
+                        "image_caption": [],
+                        "image_footnote": [],
+                    },
+                }
+            ]
+        ]
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0].kind == "image"
+    assert blocks[0].text == ""
+
+    output_path = tmp_path / "image_description.docx"
+    service._write_docx(blocks, output_path, base_dirs=[tmp_path])
+
+    with zipfile.ZipFile(output_path) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+
+    assert "Cross-sectional" not in document_xml
+
+
+def test_docx_math_spacing_handles_missing_source_spaces(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    blocks = [
+        NormalizedBlock(kind="paragraph", text="Alpha\\(x=1\\)beta. Next \\(y=2\\).Gamma"),
+    ]
+
+    output_path = tmp_path / "spacing.docx"
+    service._write_docx(blocks, output_path, base_dirs=[tmp_path])
+
+    with zipfile.ZipFile(output_path) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+
+    assert "beta. Next " in document_xml
+    assert ". Gamma" in document_xml
+    assert "Next </w:t></w:r><w:r><w:t" not in document_xml
+
+
 def test_table_and_markdown_formatting_in_docx(tmp_path: Path) -> None:
     service = PDFConversionService(tmp_path)
     # Test case: Table with math and markdown

@@ -870,10 +870,9 @@ class PDFConversionService:
             caption = _rich_text_to_plain(_first(content, f"{kind}_caption", "caption"))
             footnote = _rich_text_to_plain(_first(content, f"{kind}_footnote", "footnote"))
             image_path = _image_source_path(content) or str(_first(content, "image_path", "img_path", "path") or raw_item.get("img_path") or "")
-            extracted = _rich_text_to_plain(_first(content, f"{kind}_content", "content"))
             return NormalizedBlock(
                 kind=kind,
-                text=extracted,
+                text="",
                 image_path=image_path,
                 caption=caption,
                 footnote=footnote,
@@ -949,7 +948,7 @@ class PDFConversionService:
                 blocks.append(
                     NormalizedBlock(
                         kind=raw_kind,
-                        text=_rich_text_to_plain(item.get("content")),
+                        text="",
                         image_path=str(item.get("img_path") or item.get("image_path") or ""),
                         caption=_rich_text_to_plain(item.get(f"{raw_kind}_caption")),
                         footnote=_rich_text_to_plain(item.get(f"{raw_kind}_footnote")),
@@ -1000,6 +999,7 @@ class PDFConversionService:
         in_code = False
         in_math = False
         in_html_table = False
+        in_details = False
 
         def flush_paragraph() -> None:
             nonlocal paragraph_lines
@@ -1056,14 +1056,6 @@ class PDFConversionService:
                     in_math = False
                     math_right_delimiter = ""
                 continue
-            if stripped in {"$$", "\\["}:
-                flush_paragraph()
-                flush_list()
-                flush_table()
-                math_lines = [line]
-                math_right_delimiter = "$$" if stripped == "$$" else "\\]"
-                in_math = True
-                continue
             if stripped.startswith("```"):
                 if in_code:
                     flush_code()
@@ -1076,6 +1068,27 @@ class PDFConversionService:
                 continue
             if in_code:
                 code_lines.append(line)
+                continue
+            lowered = stripped.lower()
+            if in_details:
+                if "</details>" in lowered:
+                    in_details = False
+                continue
+            if re.match(r"^<details\b", stripped, flags=re.IGNORECASE):
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                in_details = "</details>" not in lowered
+                continue
+            if re.match(r"^</?(summary|details)\b", stripped, flags=re.IGNORECASE):
+                continue
+            if stripped in {"$$", "\\["}:
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                math_lines = [line]
+                math_right_delimiter = "$$" if stripped == "$$" else "\\]"
+                in_math = True
                 continue
             if not stripped:
                 flush_paragraph()
@@ -2199,7 +2212,14 @@ def _append_formatted_text(paragraph: Any, text: str) -> None:
             run.font.name = "Consolas"
             run.font.size = Pt(10)
         else:
-            run.text = part.replace("\\{", "{").replace("\\}", "}")
+            run.text = _normalize_text_spacing(part).replace("\\{", "{").replace("\\}", "}")
+
+
+def _normalize_text_spacing(text: str) -> str:
+    text = re.sub(r"^([.!?])(?=[A-ZÀ-ỴĐ])", r"\1 ", text)
+    text = re.sub(r"(?<=[a-zà-ỹ0-9)\]}])([.!?])(?=[A-ZÀ-ỴĐ])", r"\1 ", text)
+    text = re.sub(r"(?<=\d),(?=[A-Za-zÀ-ỹ])", ", ", text)
+    return text
 
 
 def _append_rich_content(paragraph: Any, segments: list[dict[str, Any]]) -> None:
@@ -2262,11 +2282,11 @@ def _append_spaced_math_segments(paragraph: Any, segments: list[tuple[bool, str,
 def _needs_space_between(left: str, right: str, left_is_math: bool, right_is_math: bool) -> bool:
     if not left or not right or left_is_math == right_is_math:
         return False
+    if left[-1:].isspace() or right[:1].isspace():
+        return False
     left_edge = _visible_edge(left, from_right=True)
     right_edge = _visible_edge(right, from_right=False)
     if not left_edge or not right_edge:
-        return False
-    if left_edge.isspace() or right_edge.isspace():
         return False
     if left_edge in {'(', '[', '{', '/', '\\', '"', "'", '“', '‘'} or right_edge in {')', ']', '}', '/', ',', '.', ';', ':', '!', '?', '%', '”', '’'}:
         return False
@@ -2573,6 +2593,10 @@ def _html_table_to_matrix(html: str) -> list[list[str]]:
     if not html or "<table" not in html.lower():
         return []
     soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all("details"):
+        tag.decompose()
+    for tag in soup.find_all("summary"):
+        tag.decompose()
     table = soup.find("table")
     if table is None:
         return []
