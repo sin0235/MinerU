@@ -536,6 +536,7 @@ class PDFConversionService:
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         started = time.perf_counter()
+        last_heartbeat = started
 
         def pump(stream: Any, stream_name: str) -> None:
             try:
@@ -565,8 +566,19 @@ class PDFConversionService:
             except Empty:
                 if process.poll() is not None and output_queue.empty():
                     break
+                now = time.perf_counter()
+                if now - last_heartbeat >= 8:
+                    last_heartbeat = now
+                    progress_callback(
+                        {
+                            "stage": "mineru",
+                            "message": "MinerU van dang chay, dang doi log moi tu tien trinh.",
+                            "terminal": f"[runtime] MinerU van dang chay sau {round(now - started)}s.",
+                        }
+                    )
                 continue
 
+            last_heartbeat = time.perf_counter()
             if stream_name == "stdout":
                 stdout_lines.append(line)
             else:
@@ -1329,7 +1341,7 @@ class ConversionJobManager:
         self._purge_expired()
         with self._lock:
             snapshot = self._jobs.get(job_id)
-            return dict(snapshot) if snapshot else None
+            return self._with_timing(snapshot) if snapshot else None
 
     def recent_results(self, *, limit: int = 8) -> list[dict[str, Any]]:
         self._purge_expired()
@@ -1340,7 +1352,27 @@ class ConversionJobManager:
                 if snapshot.get("status") == "completed" and isinstance(snapshot.get("result"), dict)
             ]
         completed.sort(key=lambda item: float(item.get("updated_at", 0)), reverse=True)
-        return completed[:limit]
+        return [self._with_timing(item) for item in completed[:limit]]
+
+    @staticmethod
+    def _with_timing(snapshot: dict[str, Any]) -> dict[str, Any]:
+        item = dict(snapshot)
+        now = time.time()
+        created_at = float(item.get("created_at") or now)
+        updated_at = float(item.get("updated_at") or created_at)
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        elapsed_seconds = float(result.get("elapsed_seconds") or max(0.0, now - created_at))
+        item["elapsed_seconds"] = round(elapsed_seconds, 2)
+        item["updated_age_seconds"] = round(max(0.0, now - updated_at), 2)
+        progress = int(item.get("progress") or 0)
+        if item.get("status") == "completed":
+            item["eta_seconds"] = 0
+        elif 5 <= progress < 100:
+            eta = elapsed_seconds * (100 - progress) / progress
+            item["eta_seconds"] = round(min(max(0.0, eta), 24 * 60 * 60), 2)
+        else:
+            item["eta_seconds"] = None
+        return item
 
     def _run_job(self, submission: ConversionSubmission) -> None:
         self._update_job(
@@ -1606,16 +1638,16 @@ def _rich_segments(value: Any) -> list[dict[str, str]]:
 
 
 def _rich_segments_to_text(segments: list[dict[str, str]]) -> str:
-    pieces: list[str] = []
+    pieces: list[tuple[bool, str]] = []
     for segment in segments:
         content = segment.get("content", "")
         if not content:
             continue
         if segment.get("type", "").startswith("equation"):
-            pieces.append(f"\\({content}\\)")
+            pieces.append((True, f"\\({content}\\)"))
         else:
-            pieces.append(content)
-    return re.sub(r"\s+", " ", "".join(pieces)).strip()
+            pieces.append((False, content))
+    return _join_text_math_pieces(pieces)
 
 
 def _image_source_path(content: dict[str, Any]) -> str:
@@ -2171,29 +2203,98 @@ def _append_formatted_text(paragraph: Any, text: str) -> None:
 
 
 def _append_rich_content(paragraph: Any, segments: list[dict[str, Any]]) -> None:
+    pending: list[tuple[bool, str, bool]] = []
     for segment in segments:
         kind = str(segment.get("type") or "text")
         content = str(segment.get("content") or "")
         if not content:
             continue
         if kind.startswith("equation"):
-            _append_math(paragraph, content, display=False)
+            pending.append((True, content, False))
         else:
-            _append_text_with_math(paragraph, content)
+            pending.extend(_expand_text_math_segments(content))
+    _append_spaced_math_segments(paragraph, pending)
 
 
 def _append_text_with_math(paragraph: Any, text: str) -> None:
+    _append_spaced_math_segments(paragraph, _expand_text_math_segments(text))
+
+
+def _expand_text_math_segments(text: str) -> list[tuple[bool, str, bool]]:
+    segments: list[tuple[bool, str, bool]] = []
     for is_math, value, display in _split_math_segments(text):
         if not value:
             continue
         if is_math:
-            _append_math(paragraph, value, display=display)
+            segments.append((True, value, display))
             continue
         for implicit_is_math, implicit_value in _split_implicit_latex_segments(value):
-            if implicit_is_math:
-                _append_math(paragraph, implicit_value, display=False)
-            else:
-                _append_formatted_text(paragraph, implicit_value)
+            if implicit_value:
+                segments.append((implicit_is_math, implicit_value, False))
+    return segments
+
+
+def _append_spaced_math_segments(paragraph: Any, segments: list[tuple[bool, str, bool]]) -> None:
+    previous_value = ""
+    previous_is_math = False
+    for index, (is_math, value, display) in enumerate(segments):
+        if not value:
+            continue
+        next_is_math = False
+        next_value = ""
+        for candidate_is_math, candidate_value, _ in segments[index + 1 :]:
+            if candidate_value:
+                next_is_math = candidate_is_math
+                next_value = candidate_value
+                break
+        if is_math:
+            if _needs_space_between(previous_value, value, previous_is_math, True):
+                paragraph.add_run(" ")
+            _append_math(paragraph, value, display=display)
+            if _needs_space_between(value, next_value, True, next_is_math):
+                paragraph.add_run(" ")
+        else:
+            _append_formatted_text(paragraph, value)
+        previous_value = value
+        previous_is_math = is_math
+
+
+def _needs_space_between(left: str, right: str, left_is_math: bool, right_is_math: bool) -> bool:
+    if not left or not right or left_is_math == right_is_math:
+        return False
+    left_edge = _visible_edge(left, from_right=True)
+    right_edge = _visible_edge(right, from_right=False)
+    if not left_edge or not right_edge:
+        return False
+    if left_edge.isspace() or right_edge.isspace():
+        return False
+    if left_edge in {'(', '[', '{', '/', '\\', '"', "'", '“', '‘'} or right_edge in {')', ']', '}', '/', ',', '.', ';', ':', '!', '?', '%', '”', '’'}:
+        return False
+    return _is_wordish_boundary(left_edge) or _is_wordish_boundary(right_edge)
+
+
+def _visible_edge(text: str, *, from_right: bool) -> str:
+    stripped = text.rstrip() if from_right else text.lstrip()
+    return stripped[-1:] if from_right else stripped[:1]
+
+
+def _is_wordish_boundary(char: str) -> bool:
+    return char.isalnum() or char in "}_^'′" or ord(char) > 127
+
+
+def _join_text_math_pieces(pieces: list[tuple[bool, str]]) -> str:
+    output: list[str] = []
+    previous_is_math = False
+    previous_value = ""
+    for is_math, value in pieces:
+        if not value:
+            continue
+        if output and _needs_space_between(previous_value, value, previous_is_math, is_math):
+            output.append(" ")
+        output.append(value)
+        previous_value = value
+        previous_is_math = is_math
+    return re.sub(r"\s+", " ", "".join(output)).strip()
 
 
 def _append_math(paragraph: Any, latex: str, *, display: bool) -> None:

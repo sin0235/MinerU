@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(python *)",
-      "Bash(git diff *)"
+      "Bash(git diff *)",
+      "Bash(ffprobe *)",
+      "Bash(ffmpeg -v trace -i \"d:/CapCut Drafts/0427/Resources/combination/F2FB6797-FD6C-4fe7-BAB6-B23678733C63_video.mp4\" -f null -)",
+      "Bash(ffmpeg -y -v error -i \"d:/CapCut Drafts/0427/Resources/combination/F2FB6797-FD6C-4fe7-BAB6-B23678733C63_video.mp4.alpha.mp4\" -c copy -movflags +faststart \"d:/CapCut Drafts/0427/Resources/combination/F2FB6797-FD6C-4fe7-BAB6-B23678733C63_video.recovered.mp4\")"
     ]
   }
 }

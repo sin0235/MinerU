@@ -265,6 +265,9 @@ def api_job_status(job_id: str):
                 "progress": snapshot.get("progress") or (3 if status == "queued" else 10),
                 "terminal_lines": snapshot.get("terminal_lines") or [],
                 "message": snapshot["message"],
+                "elapsed_seconds": snapshot.get("elapsed_seconds"),
+                "eta_seconds": snapshot.get("eta_seconds"),
+                "updated_age_seconds": snapshot.get("updated_age_seconds"),
                 "original_filename": snapshot["original_filename"],
             }
         )
@@ -281,6 +284,9 @@ def api_job_status(job_id: str):
                 "progress": snapshot.get("progress") or 100,
                 "terminal_lines": snapshot.get("terminal_lines") or [],
                 "message": snapshot["message"],
+                "elapsed_seconds": snapshot.get("elapsed_seconds"),
+                "eta_seconds": snapshot.get("eta_seconds"),
+                "updated_age_seconds": snapshot.get("updated_age_seconds"),
                 "result": result,
             }
         )
@@ -296,6 +302,9 @@ def api_job_status(job_id: str):
             "terminal_lines": snapshot.get("terminal_lines") or [],
             "error": snapshot["error"] or snapshot["message"],
             "message": snapshot["message"],
+            "elapsed_seconds": snapshot.get("elapsed_seconds"),
+            "eta_seconds": snapshot.get("eta_seconds"),
+            "updated_age_seconds": snapshot.get("updated_age_seconds"),
         }
     )
 
@@ -340,17 +349,16 @@ def download_artifacts_zip(job_id: str):
     snapshot = job_manager.get_snapshot(job_id.strip())
     if snapshot is None or snapshot.get("status") != "completed":
         abort(404, description="Khong tim thay job da hoan thanh.")
-    result = snapshot.get("result") or {}
-    output_dir = Path(result.get("output_dir") or "")
-    if not output_dir.exists():
+    job_dir = converter.job_dir(job_id.strip()).resolve()
+    if not job_dir.exists():
         abort(404, description="Khong tim thay thu muc artifact.")
 
-    zip_path = output_dir.parent / "artifacts_without_docx.zip"
+    zip_path = job_dir / "artifacts_without_docx.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in output_dir.parent.rglob("*"):
-            if not path.is_file() or path == zip_path or path.suffix.lower() == ".docx":
+        for path in job_dir.rglob("*"):
+            if not path.is_file() or path.resolve() == zip_path or path.suffix.lower() == ".docx":
                 continue
-            archive.write(path, path.relative_to(output_dir.parent))
+            archive.write(path, path.relative_to(job_dir))
 
     return send_file(
         zip_path,
