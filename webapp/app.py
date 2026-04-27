@@ -414,7 +414,7 @@ def _docx_preview_html(path: Path, *, max_blocks: int = 220) -> str:
             pieces.append('<p class="doc-preview-note">Preview da rut gon de giu giao dien nhe.</p>')
             break
         if isinstance(block, Paragraph):
-            text = block.text.strip()
+            text = _preview_paragraph_text(block).strip()
             if not text:
                 continue
             style_name = (block.style.name if block.style is not None else "").lower()
@@ -423,7 +423,7 @@ def _docx_preview_html(path: Path, *, max_blocks: int = 220) -> str:
         elif isinstance(block, Table):
             rows: list[str] = []
             for row in block.rows[:40]:
-                cells = "".join(f"<td>{escape(cell.text.strip())}</td>" for cell in row.cells[:12])
+                cells = "".join(f"<td>{escape(_preview_cell_text(cell).strip())}</td>" for cell in row.cells[:12])
                 rows.append(f"<tr>{cells}</tr>")
             if rows:
                 pieces.append(f"<table><tbody>{''.join(rows)}</tbody></table>")
@@ -439,6 +439,75 @@ def _iter_docx_blocks(document: Document):
             yield Paragraph(child, document)
         elif child.tag.endswith("}tbl"):
             yield Table(child, document)
+
+
+def _preview_cell_text(cell) -> str:
+    texts: list[str] = []
+    for paragraph in cell.paragraphs:
+        text = _preview_paragraph_text(paragraph).strip()
+        if text:
+            texts.append(text)
+    return "\n".join(texts)
+
+
+def _preview_paragraph_text(paragraph: Paragraph) -> str:
+    return _preview_inline_text(paragraph._p)
+
+
+def _preview_inline_text(element) -> str:
+    pieces: list[str] = []
+    for child in element.iterchildren():
+        local_name = _xml_local_name(child.tag)
+        if local_name in {"oMath", "oMathPara"}:
+            _append_preview_piece(pieces, _preview_math_text(child))
+        elif local_name == "r":
+            _append_preview_piece(pieces, _preview_run_text(child))
+        elif local_name == "hyperlink":
+            _append_preview_piece(pieces, _preview_inline_text(child))
+    return "".join(pieces)
+
+
+def _preview_run_text(run_element) -> str:
+    pieces: list[str] = []
+    for child in run_element.iterchildren():
+        local_name = _xml_local_name(child.tag)
+        if local_name == "t" and child.text:
+            pieces.append(child.text)
+        elif local_name == "tab":
+            pieces.append("\t")
+        elif local_name in {"br", "cr"}:
+            pieces.append("\n")
+    return "".join(pieces)
+
+
+def _preview_math_text(math_element) -> str:
+    return "".join(node.text or "" for node in math_element.iter() if _xml_local_name(node.tag) == "t")
+
+
+def _append_preview_piece(pieces: list[str], text: str) -> None:
+    if not text:
+        return
+    if pieces and _preview_needs_space(pieces[-1], text):
+        pieces.append(" ")
+    pieces.append(text)
+
+
+def _preview_needs_space(left: str, right: str) -> bool:
+    if not left or not right or left[-1:].isspace() or right[:1].isspace():
+        return False
+    if left[-1:] in {'(', '[', '{', '/', '\\', '"', "'", '“', '‘'}:
+        return False
+    if right[:1] in {')', ']', '}', '/', ',', '.', ';', ':', '!', '?', '%', '”', '’'}:
+        return False
+    return _preview_is_wordish(left[-1:]) or _preview_is_wordish(right[:1])
+
+
+def _preview_is_wordish(char: str) -> bool:
+    return char.isalnum() or char in "}_^'′" or ord(char) > 127
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:

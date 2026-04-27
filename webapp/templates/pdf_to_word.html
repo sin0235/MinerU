@@ -89,12 +89,11 @@
           </label>
           <label>
             <span>LLM model</span>
-            <input id="llmModelInput" name="llm_model" type="text" value="{{ converter_options.default_llm_model }}" list="llmModelOptions" />
-            <datalist id="llmModelOptions">
+            <select id="llmModelInput" name="llm_model">
               {% for value, label in converter_options.llm_models %}
-                <option value="{{ value }}">{{ label }}</option>
+                <option value="{{ value }}" {{ 'selected' if value == converter_options.default_llm_model else '' }}>{{ label }}</option>
               {% endfor %}
-            </datalist>
+            </select>
           </label>
         </div>
 

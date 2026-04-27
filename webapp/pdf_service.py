@@ -628,25 +628,35 @@ class PDFConversionService:
     ) -> tuple[list[NormalizedBlock], list[str]]:
         warnings: list[str] = []
         review_dir.mkdir(parents=True, exist_ok=True)
-        model = options.llm_model or DEFAULT_NVIDIA_LLM_MODEL
-        provider = _llm_provider_for_model(model)
-        api_key = (os.getenv(_llm_api_key_env(provider)) or "").strip()
-        if not api_key:
-            missing_env = _llm_api_key_env(provider)
-            warnings.append(f"LLM review bi bo qua vi chua cau hinh {missing_env}.")
+        requested_model = options.llm_model or DEFAULT_NVIDIA_LLM_MODEL
+        model_attempts = _llm_model_attempts(requested_model)
+        available_attempts = [
+            (model, provider, api_key)
+            for model, provider in model_attempts
+            if (api_key := (os.getenv(_llm_api_key_env(provider)) or "").strip())
+        ]
+        missing_attempts = [
+            {"model": model, "provider": provider, "missing_env": _llm_api_key_env(provider)}
+            for model, provider in model_attempts
+            if not (os.getenv(_llm_api_key_env(provider)) or "").strip()
+        ]
+        if not available_attempts:
+            missing_envs = ", ".join(dict.fromkeys(item["missing_env"] for item in missing_attempts))
+            warnings.append(f"LLM review bi bo qua vi chua cau hinh {missing_envs}.")
             (review_dir / "review_report.md").write_text(
-                f"# LLM Review\n\n- Status: skipped\n- Reason: {missing_env} is not configured\n",
+                f"# LLM Review\n\n- Status: skipped\n- Reason: missing {missing_envs}\n",
                 encoding="utf-8",
             )
             (review_dir / "review_request_summary.json").write_text(
                 json.dumps(
                     {
                         "mode": options.llm_mode,
-                        "model": model,
-                        "provider": provider,
-                        "reasoning_enabled": provider == "openrouter" and options.llm_reasoning,
+                        "model": requested_model,
+                        "provider": _llm_provider_for_model(requested_model),
+                        "reasoning_enabled": _llm_provider_for_model(requested_model) == "openrouter" and options.llm_reasoning,
                         "skipped": True,
-                        "reason": f"missing {missing_env}",
+                        "reason": f"missing {missing_envs}",
+                        "missing_attempts": missing_attempts,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -660,23 +670,35 @@ class PDFConversionService:
         proposed_patches: list[dict[str, Any]] = []
         reasoning_details: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        fallback_events: list[dict[str, Any]] = []
+        used_models: list[dict[str, str]] = []
 
         for chunk in chunks:
-            try:
-                response = self._call_llm_chat_completion(
-                    _build_llm_messages(chunk, mode=options.llm_mode),
-                    model=model,
-                    api_key=api_key,
-                    reasoning=options.llm_reasoning,
-                )
-                if response.get("reasoning_details") is not None:
-                    reasoning_details.append({"chunk_index": chunk["chunk_index"], "reasoning_details": response["reasoning_details"]})
-                parsed = _parse_llm_json_response(response["content"])
-                findings.extend(parsed.get("findings") if isinstance(parsed.get("findings"), list) else [])
-                if options.llm_mode == "correct":
-                    proposed_patches.extend(parsed.get("patches") if isinstance(parsed.get("patches"), list) else [])
-            except Exception as exc:
-                errors.append({"chunk_index": chunk["chunk_index"], "error": str(exc)})
+            messages = _build_llm_messages(chunk, mode=options.llm_mode)
+            for attempt_index, (model, provider, api_key) in enumerate(available_attempts):
+                try:
+                    response = self._call_llm_chat_completion(
+                        messages,
+                        model=model,
+                        api_key=api_key,
+                        reasoning=options.llm_reasoning,
+                    )
+                    if response.get("reasoning_details") is not None:
+                        reasoning_details.append({"chunk_index": chunk["chunk_index"], "model": model, "reasoning_details": response["reasoning_details"]})
+                    parsed = _parse_llm_json_response(response["content"])
+                    findings.extend(parsed.get("findings") if isinstance(parsed.get("findings"), list) else [])
+                    if options.llm_mode == "correct":
+                        proposed_patches.extend(parsed.get("patches") if isinstance(parsed.get("patches"), list) else [])
+                    used_models.append({"chunk_index": chunk["chunk_index"], "model": model, "provider": provider})
+                    break
+                except Exception as exc:
+                    error = {"chunk_index": chunk["chunk_index"], "model": model, "provider": provider, "error": str(exc)}
+                    errors.append(error)
+                    if attempt_index + 1 < len(available_attempts):
+                        next_model, next_provider, _ = available_attempts[attempt_index + 1]
+                        fallback_events.append({**error, "fallback_model": next_model, "fallback_provider": next_provider})
+                    else:
+                        warnings.append(f"LLM review loi chunk {chunk['chunk_index']} voi tat ca model; xem llm_errors.json.")
 
         updated_blocks = blocks
         applied: list[dict[str, Any]] = []
@@ -694,18 +716,24 @@ class PDFConversionService:
         (review_dir / "rejected_patches.json").write_text(json.dumps(rejected, ensure_ascii=False, indent=2), encoding="utf-8")
         if reasoning_details:
             (review_dir / "reasoning_details.json").write_text(json.dumps(reasoning_details, ensure_ascii=False, indent=2), encoding="utf-8")
+        if fallback_events:
+            (review_dir / "fallback_events.json").write_text(json.dumps(fallback_events, ensure_ascii=False, indent=2), encoding="utf-8")
+            warnings.append(f"LLM fallback da kich hoat {len(fallback_events)} lan; xem fallback_events.json.")
         if errors:
             (review_dir / "llm_errors.json").write_text(json.dumps(errors, ensure_ascii=False, indent=2), encoding="utf-8")
-            warnings.append(f"LLM review co {len(errors)} chunk loi; xem llm_errors.json.")
+            warnings.append(f"LLM review co {len(errors)} loi model/chunk; xem llm_errors.json.")
         (review_dir / "review_report.md").write_text(_llm_review_report(findings, applied, rejected, errors), encoding="utf-8")
         (review_dir / "review_request_summary.json").write_text(
             json.dumps(
                 {
                     "mode": options.llm_mode,
-                    "model": model,
-                    "provider": provider,
-                    "reasoning_enabled": provider == "openrouter" and options.llm_reasoning,
+                    "requested_model": requested_model,
+                    "attempted_models": [{"model": model, "provider": provider} for model, provider, _ in available_attempts],
+                    "missing_attempts": missing_attempts,
+                    "used_models": used_models,
+                    "reasoning_enabled": _llm_provider_for_model(requested_model) == "openrouter" and options.llm_reasoning,
                     "reasoning_chunks": len(reasoning_details),
+                    "fallback_events": len(fallback_events),
                     "chunk_count": len(chunks),
                     "block_count": len(blocks),
                     "findings": len(findings),
@@ -2466,6 +2494,14 @@ def _ensure_omml_namespaces(omml_xml: str) -> str:
         if omml_xml.startswith(prefix):
             return omml_xml.replace(prefix, f"{prefix} {nsdecls('m')}", 1)
     return omml_xml
+
+
+def _llm_model_attempts(model: str) -> list[tuple[str, str]]:
+    requested = model.strip() or DEFAULT_NVIDIA_LLM_MODEL
+    attempts = [(requested, _llm_provider_for_model(requested))]
+    if _llm_provider_for_model(requested) == "openrouter":
+        attempts.append((DEFAULT_NVIDIA_LLM_MODEL, "nvidia"))
+    return attempts
 
 
 def _llm_provider_for_model(model: str) -> str:

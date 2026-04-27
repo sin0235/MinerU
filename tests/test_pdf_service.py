@@ -9,7 +9,7 @@ from pathlib import Path
 
 from docx import Document
 
-from webapp.app import app, _write_job_artifacts_zip
+from webapp.app import app, _docx_preview_html, _write_job_artifacts_zip
 from webapp.pdf_service import (
     Artifact,
     ConversionJobManager,
@@ -351,6 +351,21 @@ Inline \\(a+b\\) text.
     assert "\\[c=d\\]" not in document_xml
 
 
+def test_docx_preview_keeps_word_math_text(tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    blocks = [
+        NormalizedBlock(kind="paragraph", text="Inline \\(a+b\\) text."),
+        NormalizedBlock(kind="table", table_html="<table><tr><td>Cell \\(x=1\\)</td></tr></table>"),
+    ]
+    output_path = tmp_path / "preview_math.docx"
+    service._write_docx(blocks, output_path, base_dirs=[tmp_path])
+
+    html = _docx_preview_html(output_path)
+
+    assert "Inline a+b text." in html
+    assert "Cell x=1" in html
+
+
 def test_plain_dollar_text_is_not_treated_as_math() -> None:
     assert _split_math_segments("The price is $5 and $10.") == [(False, "The price is $5 and $10.", False)]
     assert _split_math_segments("Use $x^2 + y^2$ here.") == [
@@ -403,6 +418,45 @@ def test_openrouter_llm_model_mapping_and_request(monkeypatch, tmp_path: Path) -
     assert captured["payload"]["reasoning"] == {"enabled": True}
     assert captured["authorization"] == "Bearer test-key"
     assert captured["timeout"] == 120
+
+
+def test_openrouter_llm_failure_falls_back_to_nvidia(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
+    service = PDFConversionService(tmp_path)
+    review_dir = tmp_path / "review"
+    calls = []
+
+    def fake_call(messages, *, model, api_key, reasoning=False):
+        calls.append((model, api_key, reasoning))
+        if model.startswith("openrouter/"):
+            raise RuntimeError("OpenRouter LLM HTTP 429: rate limited")
+        return {"content": '{"findings":[],"patches":[]}', "reasoning_details": None}
+
+    monkeypatch.setattr(service, "_call_llm_chat_completion", fake_call)
+
+    blocks, warnings = service._run_llm_review_layer(
+        [NormalizedBlock(kind="paragraph", text="abc", page_idx=0)],
+        review_dir,
+        ConversionOptions(
+            llm_mode="correct",
+            llm_model="openrouter/google/gemma-4-26b-a4b-it:free",
+            llm_reasoning=True,
+        ),
+    )
+
+    assert blocks[0].text == "abc"
+    assert calls == [
+        ("openrouter/google/gemma-4-26b-a4b-it:free", "openrouter-key", True),
+        ("google/gemma-3-27b-it", "nvidia-key", True),
+    ]
+    assert any("fallback" in warning for warning in warnings)
+    fallback_events = json.loads((review_dir / "fallback_events.json").read_text(encoding="utf-8"))
+    assert fallback_events[0]["provider"] == "openrouter"
+    assert fallback_events[0]["fallback_provider"] == "nvidia"
+    summary = json.loads((review_dir / "review_request_summary.json").read_text(encoding="utf-8"))
+    assert summary["fallback_events"] == 1
+    assert summary["used_models"] == [{"chunk_index": 0, "model": "google/gemma-3-27b-it", "provider": "nvidia"}]
 
 
 def test_run_mineru_passes_cli_options_and_config(monkeypatch, tmp_path: Path) -> None:
@@ -499,6 +553,17 @@ def test_api_rejects_non_pdf_upload() -> None:
 
     assert response.status_code == 400
     assert response.get_json()["ok"] is False
+
+
+def test_pdf_to_word_uses_llm_model_select() -> None:
+    client = app.test_client()
+    response = client.get("/")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert '<select id="llmModelInput" name="llm_model">' in html
+    assert "openrouter/google/gemma-4-26b-a4b-it:free" in html
+    assert 'list="llmModelOptions"' not in html
 
 
 def test_artifacts_zip_is_scoped_to_runtime_job_and_excludes_docx(tmp_path: Path) -> None:
