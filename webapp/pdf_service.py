@@ -9,6 +9,10 @@ import subprocess
 import time
 import uuid
 import html.entities
+import copy
+import difflib
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +63,9 @@ ALLOWED_LANGUAGES = {
     "devanagari",
 }
 ALLOWED_LATEX_DELIMITER_TYPES = {"a", "b", "all"}
+ALLOWED_LLM_MODES = {"off", "review", "correct"}
+DEFAULT_NVIDIA_LLM_MODEL = "google/gemma-3-27b-it"
+NVIDIA_CHAT_COMPLETIONS_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 SKIPPED_CONTENT_TYPES = {
     "header",
     "footer",
@@ -84,6 +91,8 @@ class ConversionOptions:
     server_url: str = ""
     latex_delimiters_type: str = "b"
     exam_format: bool = False
+    llm_mode: str = "off"
+    llm_model: str = DEFAULT_NVIDIA_LLM_MODEL
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -97,6 +106,8 @@ class ConversionOptions:
             "server_url": self.server_url,
             "latex_delimiters_type": self.latex_delimiters_type,
             "exam_format": self.exam_format,
+            "llm_mode": self.llm_mode,
+            "llm_model": self.llm_model,
         }
 
 
@@ -359,6 +370,10 @@ class PDFConversionService:
         if not blocks:
             raise ConversionError("MinerU khong tra ve noi dung doc duoc de tao DOCX.")
 
+        if submission.options.llm_mode != "off":
+            blocks, llm_warnings = self._run_llm_review_layer(blocks, job_dir / "llm_review", submission.options)
+            warnings.extend(llm_warnings)
+
         docx_path = docx_dir / f"{secure_filename(Path(submission.original_filename).stem) or 'document'}.docx"
         self._write_docx(
             blocks,
@@ -443,6 +458,116 @@ class PDFConversionService:
         if completed.returncode != 0:
             detail = _compact_process_error(completed.stderr or completed.stdout)
             raise ConversionError(f"MinerU xu ly that bai: {detail}")
+
+    def _run_llm_review_layer(
+        self,
+        blocks: list[NormalizedBlock],
+        review_dir: Path,
+        options: ConversionOptions,
+    ) -> tuple[list[NormalizedBlock], list[str]]:
+        warnings: list[str] = []
+        review_dir.mkdir(parents=True, exist_ok=True)
+        api_key = (os.getenv("NVIDIA_API_KEY") or "").strip()
+        if not api_key:
+            warnings.append("LLM review bi bo qua vi chua cau hinh NVIDIA_API_KEY.")
+            (review_dir / "review_report.md").write_text(
+                "# LLM Review\n\n- Status: skipped\n- Reason: NVIDIA_API_KEY is not configured\n",
+                encoding="utf-8",
+            )
+            (review_dir / "review_request_summary.json").write_text(
+                json.dumps({"mode": options.llm_mode, "skipped": True, "reason": "missing NVIDIA_API_KEY"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return blocks, warnings
+
+        chunks = _chunk_blocks_for_llm(blocks)
+        findings: list[dict[str, Any]] = []
+        proposed_patches: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        for chunk in chunks:
+            try:
+                response = self._call_nvidia_chat_completion(
+                    _build_llm_messages(chunk, mode=options.llm_mode),
+                    model=options.llm_model or DEFAULT_NVIDIA_LLM_MODEL,
+                    api_key=api_key,
+                )
+                parsed = _parse_llm_json_response(response)
+                findings.extend(parsed.get("findings") if isinstance(parsed.get("findings"), list) else [])
+                if options.llm_mode == "correct":
+                    proposed_patches.extend(parsed.get("patches") if isinstance(parsed.get("patches"), list) else [])
+            except Exception as exc:
+                errors.append({"chunk_index": chunk["chunk_index"], "error": str(exc)})
+
+        updated_blocks = blocks
+        applied: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        if options.llm_mode == "correct" and proposed_patches:
+            updated_blocks, applied, rejected = _apply_safe_llm_patches(blocks, proposed_patches)
+            if rejected:
+                warnings.append(f"LLM da tu choi {len(rejected)} patch khong an toan.")
+            if applied:
+                warnings.append(f"LLM da ap dung {len(applied)} patch van ban an toan.")
+
+        (review_dir / "review_findings.json").write_text(json.dumps(findings, ensure_ascii=False, indent=2), encoding="utf-8")
+        (review_dir / "proposed_patches.json").write_text(json.dumps(proposed_patches, ensure_ascii=False, indent=2), encoding="utf-8")
+        (review_dir / "applied_patches.json").write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+        (review_dir / "rejected_patches.json").write_text(json.dumps(rejected, ensure_ascii=False, indent=2), encoding="utf-8")
+        if errors:
+            (review_dir / "llm_errors.json").write_text(json.dumps(errors, ensure_ascii=False, indent=2), encoding="utf-8")
+            warnings.append(f"LLM review co {len(errors)} chunk loi; xem llm_errors.json.")
+        (review_dir / "review_report.md").write_text(_llm_review_report(findings, applied, rejected, errors), encoding="utf-8")
+        (review_dir / "review_request_summary.json").write_text(
+            json.dumps(
+                {
+                    "mode": options.llm_mode,
+                    "model": options.llm_model or DEFAULT_NVIDIA_LLM_MODEL,
+                    "chunk_count": len(chunks),
+                    "block_count": len(blocks),
+                    "findings": len(findings),
+                    "proposed_patches": len(proposed_patches),
+                    "applied_patches": len(applied),
+                    "rejected_patches": len(rejected),
+                    "errors": len(errors),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return updated_blocks, warnings
+
+    def _call_nvidia_chat_completion(self, messages: list[dict[str, str]], *, model: str, api_key: str) -> str:
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 2048,
+                "temperature": 0.0,
+                "top_p": 0.7,
+                "stream": False,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            NVIDIA_CHAT_COMPLETIONS_URL,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:1000]
+            raise RuntimeError(f"NVIDIA LLM HTTP {exc.code}: {detail}") from exc
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        if not content:
+            raise RuntimeError("NVIDIA LLM tra ve noi dung rong.")
+        return content
 
     def _mineru_command(self) -> list[str]:
         raw_command = (os.getenv("MINERU_COMMAND") or "").strip()
@@ -997,6 +1122,8 @@ class PDFConversionService:
             "*_model.json",
             "mineru_stdout.log",
             "mineru_stderr.log",
+            "llm_review/*.json",
+            "llm_review/*.md",
         ]
         for pattern in patterns:
             candidates.extend(job_dir.rglob(pattern))
@@ -1021,7 +1148,7 @@ class PDFConversionService:
         return artifacts
 
     def _remove_non_download_artifacts(self, job_dir: Path, artifacts: list[Artifact]) -> None:
-        keep = {artifact.path.resolve() for artifact in artifacts if artifact.kind in {"docx", "markdown", "json", "layout"}}
+        keep = {artifact.path.resolve() for artifact in artifacts if artifact.kind in {"docx", "markdown", "json", "layout", "llm_review"}}
         for path in job_dir.rglob("*"):
             if path.is_file() and path.resolve() not in keep:
                 path.unlink(missing_ok=True)
@@ -1362,6 +1489,192 @@ def _clamp_heading_level(value: Any) -> int:
 
 def _block_has_content(block: NormalizedBlock) -> bool:
     return bool(block.text or block.items or block.table_html or block.image_path or block.caption)
+
+
+def _chunk_blocks_for_llm(blocks: list[NormalizedBlock], *, max_chars: int = 6000) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+    current_chars = 0
+    current_page: int | None = None
+    for index, block in enumerate(blocks):
+        editable = _llm_editable_block(index, block)
+        if editable is None:
+            continue
+        block_chars = len(json.dumps(editable, ensure_ascii=False))
+        should_flush = current and (current_chars + block_chars > max_chars or editable.get("page_idx") != current_page)
+        if should_flush:
+            chunks.append({"chunk_index": len(chunks), "blocks": current})
+            current = []
+            current_chars = 0
+        current.append(editable)
+        current_chars += block_chars
+        current_page = editable.get("page_idx")
+    if current:
+        chunks.append({"chunk_index": len(chunks), "blocks": current})
+    return chunks
+
+
+def _llm_editable_block(index: int, block: NormalizedBlock) -> dict[str, Any] | None:
+    editable: dict[str, Any] = {"block_index": index, "page_idx": block.page_idx, "kind": block.kind, "fields": {}}
+    if block.kind in {"paragraph", "title", "equation", "code"} and block.text:
+        editable["fields"]["text"] = block.text
+    if block.kind == "list" and block.items:
+        editable["fields"]["items"] = block.items
+    if block.caption:
+        editable["fields"]["caption"] = block.caption
+    if block.footnote:
+        editable["fields"]["footnote"] = block.footnote
+    return editable if editable["fields"] else None
+
+
+def _build_llm_messages(chunk: dict[str, Any], *, mode: str) -> list[dict[str, str]]:
+    action = "review and propose safe patches" if mode == "correct" else "review and report suspicious OCR issues"
+    schema = (
+        '{"findings":[{"block_index":0,"severity":"low|medium|high","issue_type":"ocr|math|spelling|format",'
+        '"original":"...","suggestion":"...","reason":"..."}],'
+        '"patches":[{"block_index":0,"field":"text|caption|footnote|items[0]","old_text":"...",'
+        '"new_text":"...","confidence":0.0,"reason":"..."}]}'
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a careful Vietnamese math exam OCR reviewer. Return strict JSON only. "
+                "Do not translate or broadly rewrite. Do not change numbers, answer choices, formulas, names, paths, tables, or order unless the OCR error is obvious. "
+                "For correct mode, patches must be small, high-confidence text fixes only."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Task: {action}. Output schema: {schema}\n\n"
+                f"Chunk JSON:\n{json.dumps(chunk, ensure_ascii=False)}"
+            ),
+        },
+    ]
+
+
+def _parse_llm_json_response(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        text = match.group(0)
+    parsed = json.loads(text)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _apply_safe_llm_patches(
+    blocks: list[NormalizedBlock], patches: list[dict[str, Any]]
+) -> tuple[list[NormalizedBlock], list[dict[str, Any]], list[dict[str, Any]]]:
+    updated = copy.deepcopy(blocks)
+    applied: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for patch in patches:
+        ok, reason = _validate_llm_patch(updated, patch)
+        if not ok:
+            rejected.append({**patch, "rejected_reason": reason})
+            continue
+        block = updated[int(patch["block_index"])]
+        field = str(patch["field"])
+        old_text = str(patch["old_text"])
+        new_text = str(patch["new_text"])
+        if field == "text":
+            block.text = block.text.replace(old_text, new_text, 1)
+            if block.rich_content:
+                for segment in block.rich_content:
+                    if segment.get("type") == "text" and old_text in str(segment.get("content") or ""):
+                        segment["content"] = str(segment.get("content") or "").replace(old_text, new_text, 1)
+                        break
+                else:
+                    block.rich_content = []
+        elif field == "caption":
+            block.caption = block.caption.replace(old_text, new_text, 1)
+        elif field == "footnote":
+            block.footnote = block.footnote.replace(old_text, new_text, 1)
+        else:
+            match = re.fullmatch(r"items\[(\d+)\]", field)
+            item_index = int(match.group(1))
+            block.items[item_index] = block.items[item_index].replace(old_text, new_text, 1)
+        applied.append(patch)
+    return updated, applied, rejected
+
+
+def _validate_llm_patch(blocks: list[NormalizedBlock], patch: dict[str, Any]) -> tuple[bool, str]:
+    try:
+        block_index = int(patch.get("block_index"))
+    except (TypeError, ValueError):
+        return False, "invalid block_index"
+    if block_index < 0 or block_index >= len(blocks):
+        return False, "block_index out of range"
+    field = str(patch.get("field") or "")
+    old_text = str(patch.get("old_text") or "")
+    new_text = str(patch.get("new_text") or "")
+    try:
+        confidence = float(patch.get("confidence") or 0)
+    except (TypeError, ValueError):
+        return False, "invalid confidence"
+    if confidence < 0.75:
+        return False, "confidence too low"
+    if not old_text or not new_text or old_text == new_text:
+        return False, "empty or unchanged patch"
+    block = blocks[block_index]
+    target = ""
+    if field in {"text", "caption", "footnote"}:
+        target = getattr(block, field)
+    else:
+        match = re.fullmatch(r"items\[(\d+)\]", field)
+        if not match:
+            return False, "unsupported field"
+        item_index = int(match.group(1))
+        if item_index < 0 or item_index >= len(block.items):
+            return False, "item index out of range"
+        target = block.items[item_index]
+    if old_text not in target:
+        return False, "old_text mismatch"
+    if _numbers_changed(old_text, new_text):
+        return False, "numbers changed"
+    if _latex_commands_changed(old_text, new_text):
+        return False, "latex commands changed"
+    ratio = difflib.SequenceMatcher(None, old_text, new_text).ratio()
+    if ratio < 0.55 or abs(len(new_text) - len(old_text)) > max(20, len(old_text) * 0.4):
+        return False, "change too large"
+    return True, ""
+
+
+def _numbers_changed(old_text: str, new_text: str) -> bool:
+    return re.findall(r"\d+(?:[,.]\d+)?", old_text) != re.findall(r"\d+(?:[,.]\d+)?", new_text)
+
+
+def _latex_commands_changed(old_text: str, new_text: str) -> bool:
+    return re.findall(r"\\[A-Za-z]+", old_text) != re.findall(r"\\[A-Za-z]+", new_text)
+
+
+def _llm_review_report(
+    findings: list[dict[str, Any]], applied: list[dict[str, Any]], rejected: list[dict[str, Any]], errors: list[dict[str, Any]]
+) -> str:
+    lines = ["# LLM Review", "", f"- Findings: {len(findings)}", f"- Applied patches: {len(applied)}", f"- Rejected patches: {len(rejected)}", f"- Errors: {len(errors)}", ""]
+    if findings:
+        lines.append("## Findings")
+        for item in findings:
+            lines.append(f"- Block {item.get('block_index')}: {item.get('issue_type')} / {item.get('severity')} — {item.get('reason')}")
+            if item.get("original") or item.get("suggestion"):
+                lines.append(f"  - `{item.get('original', '')}` → `{item.get('suggestion', '')}`")
+    if applied:
+        lines.extend(["", "## Applied patches"])
+        for patch in applied:
+            lines.append(f"- Block {patch.get('block_index')} `{patch.get('field')}`: `{patch.get('old_text')}` → `{patch.get('new_text')}`")
+    if rejected:
+        lines.extend(["", "## Rejected patches"])
+        for patch in rejected:
+            lines.append(f"- Block {patch.get('block_index')} `{patch.get('field')}`: {patch.get('rejected_reason')}")
+    if errors:
+        lines.extend(["", "## Errors"])
+        for error in errors:
+            lines.append(f"- Chunk {error.get('chunk_index')}: {error.get('error')}")
+    return "\n".join(lines).strip() + "\n"
 
 
 def _format_exam_blocks(blocks: list[NormalizedBlock]) -> list[NormalizedBlock]:
@@ -2011,6 +2324,8 @@ def _latest_file(root: Path, pattern: str) -> Path | None:
 
 def _artifact_kind(path: Path) -> str:
     name = path.name.lower()
+    if "llm_review" in path.parts:
+        return "llm_review"
     if name.endswith(".docx"):
         return "docx"
     if name.endswith(".md"):
@@ -2032,6 +2347,7 @@ def _artifact_label(path: Path) -> str:
         "layout": "Layout PDF",
         "json": "Structured JSON",
         "log": "MinerU log",
+        "llm_review": "LLM Review",
     }
     return labels.get(kind, path.name)
 

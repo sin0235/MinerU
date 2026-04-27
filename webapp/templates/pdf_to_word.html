@@ -79,6 +79,18 @@
             <span>Đến trang</span>
             <input id="endPageInput" name="end_page" type="number" min="1" max="99999" placeholder="Tất cả" />
           </label>
+          <label>
+            <span>LLM review</span>
+            <select id="llmModeInput" name="llm_mode">
+              {% for value, label in converter_options.llm_modes %}
+                <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>LLM model</span>
+            <input id="llmModelInput" name="llm_model" type="text" value="{{ converter_options.default_llm_model }}" />
+          </label>
         </div>
 
         <div class="toggle-grid">
@@ -447,6 +459,8 @@
     formData.set('start_page', document.getElementById('startPageInput').value || '1');
     formData.set('end_page', document.getElementById('endPageInput').value || '');
     formData.set('server_url', document.getElementById('serverUrlInput').value.trim());
+    formData.set('llm_mode', document.getElementById('llmModeInput').value);
+    formData.set('llm_model', document.getElementById('llmModelInput').value.trim());
     convertBtn.disabled = true;
     showRunning('Đang đưa file vào hàng đợi...', 'queued');
     try {

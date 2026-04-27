@@ -14,7 +14,9 @@ try:
         ALLOWED_BACKENDS,
         ALLOWED_LANGUAGES,
         ALLOWED_LATEX_DELIMITER_TYPES,
+        ALLOWED_LLM_MODES,
         ALLOWED_PARSE_METHODS,
+        DEFAULT_NVIDIA_LLM_MODEL,
         ConversionJobManager,
         ConversionOptions,
         PDFConversionService,
@@ -24,7 +26,9 @@ except ImportError:  # pragma: no cover
         ALLOWED_BACKENDS,
         ALLOWED_LANGUAGES,
         ALLOWED_LATEX_DELIMITER_TYPES,
+        ALLOWED_LLM_MODES,
         ALLOWED_PARSE_METHODS,
+        DEFAULT_NVIDIA_LLM_MODEL,
         ConversionJobManager,
         ConversionOptions,
         PDFConversionService,
@@ -88,6 +92,13 @@ def _converter_options_payload() -> dict:
             ("a", "$...$ / $$...$$"),
             ("all", "All in DOCX parser"),
         ],
+        "llm_modes": [
+            ("off", "Tắt"),
+            ("review", "Chỉ kiểm tra"),
+            ("correct", "Tự sửa lỗi rõ ràng"),
+        ],
+        "llm_api_configured": bool((os.getenv("NVIDIA_API_KEY") or "").strip()),
+        "default_llm_model": DEFAULT_NVIDIA_LLM_MODEL,
     }
 
 
@@ -97,12 +108,16 @@ def _conversion_options_from_request() -> ConversionOptions:
     parse_method = _choice("parse_method", ALLOWED_PARSE_METHODS, "auto")
     language = _choice("language", ALLOWED_LANGUAGES, "ch")
     latex_delimiters_type = _choice("latex_delimiters_type", ALLOWED_LATEX_DELIMITER_TYPES, "b")
+    llm_mode = _choice("llm_mode", ALLOWED_LLM_MODES, "off")
+    llm_model = (form.get("llm_model") or DEFAULT_NVIDIA_LLM_MODEL).strip() or DEFAULT_NVIDIA_LLM_MODEL
     start_page_ui = _optional_int(form.get("start_page"), default=1, minimum=1, maximum=99999)
     end_page_ui = _optional_int(form.get("end_page"), default=None, minimum=1, maximum=99999)
     start_page = max(0, start_page_ui - 1)
     end_page = end_page_ui - 1 if end_page_ui is not None else None
     if end_page is not None and end_page < start_page:
         raise ValueError("Trang ket thuc phai lon hon hoac bang trang bat dau.")
+    if llm_mode != "off" and not (os.getenv("NVIDIA_API_KEY") or "").strip():
+        raise ValueError("Chua cau hinh NVIDIA_API_KEY nen khong the bat LLM review.")
     return ConversionOptions(
         backend=backend,
         parse_method=parse_method,
@@ -114,6 +129,8 @@ def _conversion_options_from_request() -> ConversionOptions:
         server_url=(form.get("server_url") or "").strip(),
         latex_delimiters_type=latex_delimiters_type,
         exam_format=_form_bool("exam_format", default=False),
+        llm_mode=llm_mode,
+        llm_model=llm_model,
     )
 
 
