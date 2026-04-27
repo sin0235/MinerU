@@ -11,13 +11,15 @@ import uuid
 import html.entities
 import copy
 import difflib
+import inspect
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
-from typing import Any
+from queue import Empty, Queue
+from threading import Lock, Thread
+from typing import Any, Callable
 
 from bs4 import BeautifulSoup
 from docx import Document
@@ -77,6 +79,7 @@ SKIPPED_CONTENT_TYPES = {
     "page_footnote",
     "seal",
 }
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass(slots=True)
@@ -351,7 +354,7 @@ class PDFConversionService:
             return "vlm-http-client"
         return "hybrid-auto-engine" if self._mineru_cuda_available() else "pipeline"
 
-    def convert(self, submission: ConversionSubmission) -> ConversionResult:
+    def convert(self, submission: ConversionSubmission, progress_callback: ProgressCallback | None = None) -> ConversionResult:
         readiness = self.readiness()
         if not readiness.ready:
             raise ConversionError(readiness.message)
@@ -364,16 +367,40 @@ class PDFConversionService:
         docx_dir.mkdir(parents=True, exist_ok=True)
 
         backend = self.resolve_backend(submission.options.backend)
-        self._run_mineru(submission.input_path, mineru_output_dir, backend, submission.options)
+        self._report_progress(
+            progress_callback,
+            progress=8,
+            stage="prepare",
+            message="Dang chuan bi thu muc job va kiem tra MinerU.",
+        )
+        self._run_mineru(submission.input_path, mineru_output_dir, backend, submission.options, progress_callback=progress_callback)
 
+        self._report_progress(
+            progress_callback,
+            progress=70,
+            stage="normalize",
+            message="MinerU da xong. Dang doc cau truc tai lieu.",
+        )
         blocks, source_path, source_kind, page_count, warnings = self._load_normalized_blocks(mineru_output_dir)
         if not blocks:
             raise ConversionError("MinerU khong tra ve noi dung doc duoc de tao DOCX.")
 
         if submission.options.llm_mode != "off":
+            self._report_progress(
+                progress_callback,
+                progress=80,
+                stage="llm_review",
+                message="Dang chay lop LLM review tren noi dung da trich xuat.",
+            )
             blocks, llm_warnings = self._run_llm_review_layer(blocks, job_dir / "llm_review", submission.options)
             warnings.extend(llm_warnings)
 
+        self._report_progress(
+            progress_callback,
+            progress=88,
+            stage="docx",
+            message="Dang tao DOCX editable.",
+        )
         docx_path = docx_dir / f"{secure_filename(Path(submission.original_filename).stem) or 'document'}.docx"
         self._write_docx(
             blocks,
@@ -382,6 +409,12 @@ class PDFConversionService:
             options=submission.options,
         )
 
+        self._report_progress(
+            progress_callback,
+            progress=96,
+            stage="artifacts",
+            message="Dang gom artifact va log ket qua.",
+        )
         artifacts = self._collect_artifacts(job_dir, docx_path)
         if not self.keep_artifacts:
             self._remove_non_download_artifacts(job_dir, artifacts)
@@ -408,7 +441,19 @@ class PDFConversionService:
             raise FileNotFoundError(relative_path)
         return candidate
 
-    def _run_mineru(self, pdf_path: Path, output_dir: Path, backend: str, options: ConversionOptions) -> None:
+    @staticmethod
+    def _report_progress(progress_callback: ProgressCallback | None, **event: Any) -> None:
+        if progress_callback is not None:
+            progress_callback(event)
+
+    def _run_mineru(
+        self,
+        pdf_path: Path,
+        output_dir: Path,
+        backend: str,
+        options: ConversionOptions,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         command = [
             *self._mineru_command(),
             "-p",
@@ -443,6 +488,10 @@ class PDFConversionService:
         if self.vl_model_name:
             env.setdefault("MINERU_VL_MODEL_NAME", self.vl_model_name)
 
+        if progress_callback is not None:
+            self._run_mineru_streaming(command, output_dir, env, progress_callback)
+            return
+
         completed = subprocess.run(
             command,
             cwd=self.root,
@@ -457,6 +506,98 @@ class PDFConversionService:
         (output_dir / "mineru_stderr.log").write_text(completed.stderr or "", encoding="utf-8")
         if completed.returncode != 0:
             detail = _compact_process_error(completed.stderr or completed.stdout)
+            raise ConversionError(f"MinerU xu ly that bai: {detail}")
+
+    def _run_mineru_streaming(
+        self,
+        command: list[str],
+        output_dir: Path,
+        env: dict[str, str],
+        progress_callback: ProgressCallback,
+    ) -> None:
+        self._report_progress(
+            progress_callback,
+            progress=14,
+            stage="mineru",
+            message="Dang chay MinerU. Terminal se cap nhat theo stdout/stderr.",
+            terminal=f"$ {shlex.join(command)}",
+        )
+        process = subprocess.Popen(
+            command,
+            cwd=self.root,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        output_queue: Queue[tuple[str, str]] = Queue()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        started = time.perf_counter()
+
+        def pump(stream: Any, stream_name: str) -> None:
+            try:
+                for raw_line in iter(stream.readline, ""):
+                    output_queue.put((stream_name, raw_line.rstrip("\r\n")))
+            finally:
+                stream.close()
+
+        threads = [
+            Thread(target=pump, args=(process.stdout, "stdout"), daemon=True),
+            Thread(target=pump, args=(process.stderr, "stderr"), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+
+        while True:
+            if time.perf_counter() - started > self.timeout_seconds:
+                process.kill()
+                for thread in threads:
+                    thread.join(timeout=1)
+                (output_dir / "mineru_stdout.log").write_text("\n".join(stdout_lines), encoding="utf-8")
+                (output_dir / "mineru_stderr.log").write_text("\n".join(stderr_lines), encoding="utf-8")
+                raise ConversionError(f"MinerU xu ly qua thoi gian cho phep ({self.timeout_seconds}s).")
+
+            try:
+                stream_name, line = output_queue.get(timeout=0.2)
+            except Empty:
+                if process.poll() is not None and output_queue.empty():
+                    break
+                continue
+
+            if stream_name == "stdout":
+                stdout_lines.append(line)
+            else:
+                stderr_lines.append(line)
+
+            inferred_progress = _infer_mineru_progress(line)
+            event: dict[str, Any] = {
+                "stage": "mineru",
+                "message": "MinerU dang phan tich PDF.",
+                "terminal": f"[{stream_name}] {line}",
+            }
+            if inferred_progress is not None:
+                event["progress"] = inferred_progress
+            progress_callback(event)
+
+        for thread in threads:
+            thread.join(timeout=1)
+
+        while not output_queue.empty():
+            stream_name, line = output_queue.get_nowait()
+            if stream_name == "stdout":
+                stdout_lines.append(line)
+            else:
+                stderr_lines.append(line)
+            progress_callback({"stage": "mineru", "terminal": f"[{stream_name}] {line}"})
+
+        returncode = process.wait(timeout=1)
+        (output_dir / "mineru_stdout.log").write_text("\n".join(stdout_lines), encoding="utf-8")
+        (output_dir / "mineru_stderr.log").write_text("\n".join(stderr_lines), encoding="utf-8")
+        if returncode != 0:
+            detail = _compact_process_error("\n".join(stderr_lines) or "\n".join(stdout_lines))
             raise ConversionError(f"MinerU xu ly that bai: {detail}")
 
     def _run_llm_review_layer(
@@ -1171,6 +1312,9 @@ class ConversionJobManager:
             "created_at": now,
             "updated_at": now,
             "message": "Da nhan file PDF. Job dang cho worker xu ly.",
+            "stage": "queued",
+            "progress": 3,
+            "terminal_lines": [],
             "original_filename": submission.original_filename,
             "input_size_bytes": submission.input_size_bytes,
             "result": None,
@@ -1199,9 +1343,24 @@ class ConversionJobManager:
         return completed[:limit]
 
     def _run_job(self, submission: ConversionSubmission) -> None:
-        self._update_job(submission.job_id, status="running", message="MinerU dang phan tich PDF va tao file Word.")
+        self._update_job(
+            submission.job_id,
+            status="running",
+            stage="starting",
+            progress=6,
+            message="MinerU dang phan tich PDF va tao file Word.",
+        )
+        progress_callback = self._progress_callback(submission.job_id)
         try:
-            result = self._service.convert(submission)
+            convert = self._service.convert
+            try:
+                supports_progress = "progress_callback" in inspect.signature(convert).parameters
+            except (TypeError, ValueError):
+                supports_progress = isinstance(self._service, PDFConversionService)
+            if supports_progress:
+                result = convert(submission, progress_callback=progress_callback)
+            else:
+                result = convert(submission)
         except ConversionError as exc:
             self._update_job(submission.job_id, status="failed", error=str(exc), message=str(exc))
             return
@@ -1217,10 +1376,41 @@ class ConversionJobManager:
         self._update_job(
             submission.job_id,
             status="completed",
+            stage="completed",
+            progress=100,
             message="Da tao DOCX thanh cong.",
             result=result.to_payload(),
             error=None,
         )
+
+    def _progress_callback(self, job_id: str) -> ProgressCallback:
+        def callback(event: dict[str, Any]) -> None:
+            self._apply_progress_event(job_id, event)
+
+        return callback
+
+    def _apply_progress_event(self, job_id: str, event: dict[str, Any]) -> None:
+        with self._lock:
+            snapshot = self._jobs.get(job_id)
+            if snapshot is None:
+                return
+            current_progress = int(snapshot.get("progress") or 0)
+            if "progress" in event:
+                try:
+                    snapshot["progress"] = max(current_progress, max(0, min(99, int(event["progress"]))))
+                except (TypeError, ValueError):
+                    pass
+            if event.get("stage"):
+                snapshot["stage"] = str(event["stage"])
+            if event.get("message"):
+                snapshot["message"] = str(event["message"])
+            terminal_lines = snapshot.setdefault("terminal_lines", [])
+            for raw_line in _event_terminal_lines(event):
+                line = raw_line.strip()
+                if line:
+                    terminal_lines.append(line[:4000])
+            snapshot["terminal_lines"] = terminal_lines[-400:]
+            snapshot["updated_at"] = time.time()
 
     def _update_job(self, job_id: str, **updates: Any) -> None:
         with self._lock:
@@ -1338,6 +1528,45 @@ def _compact_process_error(text: str, *, limit: int = 1200) -> str:
     if not compact:
         return "khong co stderr/stdout."
     return compact[:limit] + ("..." if len(compact) > limit else "")
+
+
+def _infer_mineru_progress(line: str) -> int | None:
+    text = line.strip()
+    if not text:
+        return None
+    percent_match = re.search(r"(?<!\d)(\d{1,3})(?:\.\d+)?\s*%", text)
+    if percent_match:
+        raw_percent = max(0, min(100, int(percent_match.group(1))))
+        return 15 + round(raw_percent * 0.5)
+    page_match = re.search(r"(?:page|pages|trang)\D{0,12}(\d{1,5})\D{1,8}(\d{1,5})", text, flags=re.IGNORECASE)
+    if page_match:
+        current = int(page_match.group(1))
+        total = max(1, int(page_match.group(2)))
+        if current <= total:
+            return 15 + round((current / total) * 50)
+    lower = text.lower()
+    phase_hints = [
+        (18, ("load", "model", "init")),
+        (28, ("parse", "analy", "ocr")),
+        (42, ("layout", "detect")),
+        (54, ("table", "formula", "span")),
+        (64, ("dump", "save", "export")),
+    ]
+    for progress, words in phase_hints:
+        if any(word in lower for word in words):
+            return progress
+    return None
+
+
+def _event_terminal_lines(event: dict[str, Any]) -> list[str]:
+    raw_lines = event.get("terminal_lines")
+    lines: list[str] = []
+    if isinstance(raw_lines, list):
+        lines.extend(str(line) for line in raw_lines)
+    raw_line = event.get("terminal")
+    if raw_line is not None:
+        lines.append(str(raw_line))
+    return lines
 
 
 def _as_pages(data: Any) -> list[list[dict[str, Any]]]:

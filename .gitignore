@@ -9,3 +9,5 @@ webapp_colab.pid
 cloudflared.log
 cloudflared.pid
 output_original_project/*
+.claude/*
+.pytest_tmp_codex2/

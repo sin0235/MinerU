@@ -118,6 +118,14 @@
         </label>
       </form>
 
+      <div class="input-preview hidden" id="inputPreview">
+        <div class="preview-head">
+          <strong>Preview PDF</strong>
+          <button class="ghost-btn compact" id="closeInputPreviewBtn" type="button">Ẩn</button>
+        </div>
+        <iframe id="inputPdfFrame" title="PDF upload preview"></iframe>
+      </div>
+
       <div class="runtime-grid">
         <div>
           <span>Backend</span>
@@ -149,10 +157,21 @@
         <div class="progress-track">
           <span id="progressBar"></span>
         </div>
-        <p id="jobMessage">Đang xử lý...</p>
+        <div class="job-meta">
+          <p id="jobMessage">Đang xử lý...</p>
+          <strong id="progressPercent">0%</strong>
+        </div>
       </div>
 
       <div id="errorState" class="error-state hidden"></div>
+
+      <div class="terminal-panel hidden" id="terminalPanel">
+        <div class="preview-head">
+          <strong>Terminal realtime</strong>
+          <button class="ghost-btn compact" id="clearTerminalBtn" type="button">Xóa log</button>
+        </div>
+        <pre id="terminalOutput"></pre>
+      </div>
 
       <div id="resultState" class="result-state hidden">
         <div class="result-summary">
@@ -175,6 +194,13 @@
         </div>
 
         <div class="download-strip" id="downloadStrip"></div>
+        <div class="preview-panel hidden" id="previewPanel">
+          <div class="preview-head">
+            <strong id="previewTitle">Preview</strong>
+            <button class="ghost-btn compact" id="closePreviewBtn" type="button">Đóng</button>
+          </div>
+          <div id="previewBody" class="preview-body"></div>
+        </div>
         <div class="warning-list hidden" id="warningList"></div>
       </div>
     </section>
@@ -212,18 +238,30 @@
   const resultState = document.getElementById('resultState');
   const jobBadge = document.getElementById('jobBadge');
   const progressBar = document.getElementById('progressBar');
+  const progressPercent = document.getElementById('progressPercent');
   const jobMessage = document.getElementById('jobMessage');
+  const terminalPanel = document.getElementById('terminalPanel');
+  const terminalOutput = document.getElementById('terminalOutput');
+  const clearTerminalBtn = document.getElementById('clearTerminalBtn');
+  const inputPreview = document.getElementById('inputPreview');
+  const inputPdfFrame = document.getElementById('inputPdfFrame');
+  const closeInputPreviewBtn = document.getElementById('closeInputPreviewBtn');
   const resultFile = document.getElementById('resultFile');
   const resultBackend = document.getElementById('resultBackend');
   const resultTime = document.getElementById('resultTime');
   const resultPages = document.getElementById('resultPages');
   const downloadStrip = document.getElementById('downloadStrip');
+  const previewPanel = document.getElementById('previewPanel');
+  const previewTitle = document.getElementById('previewTitle');
+  const previewBody = document.getElementById('previewBody');
+  const closePreviewBtn = document.getElementById('closePreviewBtn');
   const warningList = document.getElementById('warningList');
   const historyList = document.getElementById('historyList');
   const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
 
   let activePoll = null;
   let currentJobId = null;
+  let inputPreviewUrl = '';
 
   function escapeHtml(value) {
     const span = document.createElement('span');
@@ -236,24 +274,42 @@
     jobBadge.textContent = status === 'idle' ? 'Idle' : status;
   }
 
-  function showError(message) {
+  function showError(message, progress) {
     emptyState.classList.add('hidden');
     jobState.classList.add('hidden');
     resultState.classList.add('hidden');
     errorState.textContent = message;
     errorState.classList.remove('hidden');
     setBadge('failed');
-    progressBar.style.width = '100%';
+    updateProgress(progress !== undefined ? progress : Number(progressPercent.textContent.replace('%', '') || 0));
   }
 
-  function showRunning(message, status) {
+  function updateProgress(value) {
+    const progress = Math.max(0, Math.min(100, Number(value || 0)));
+    progressBar.style.width = progress.toFixed(0) + '%';
+    progressPercent.textContent = progress.toFixed(0) + '%';
+  }
+
+  function renderTerminal(lines) {
+    if (!lines || !lines.length) {
+      terminalPanel.classList.add('hidden');
+      terminalOutput.textContent = '';
+      return;
+    }
+    terminalPanel.classList.remove('hidden');
+    terminalOutput.textContent = lines.slice(-400).join('\n');
+    terminalOutput.scrollTop = terminalOutput.scrollHeight;
+  }
+
+  function showRunning(message, status, progress, terminalLines) {
     emptyState.classList.add('hidden');
     errorState.classList.add('hidden');
     resultState.classList.add('hidden');
     jobState.classList.remove('hidden');
     jobMessage.textContent = message || 'Đang xử lý...';
     setBadge(status || 'running');
-    progressBar.style.width = status === 'queued' ? '30%' : '68%';
+    updateProgress(progress || (status === 'queued' ? 3 : 10));
+    renderTerminal(terminalLines || []);
   }
 
   function formatSize(bytes) {
@@ -264,13 +320,14 @@
     return (size / 1024 / 1024).toFixed(1) + ' MB';
   }
 
-  function renderResult(result) {
+  function renderResult(result, jobMeta) {
     emptyState.classList.add('hidden');
     jobState.classList.add('hidden');
     errorState.classList.add('hidden');
     resultState.classList.remove('hidden');
     setBadge('completed');
-    progressBar.style.width = '100%';
+    updateProgress(100);
+    renderTerminal((jobMeta && jobMeta.terminal_lines) || []);
 
     resultFile.textContent = result.download_name || result.original_filename || 'output.docx';
     resultBackend.textContent = result.backend_used || '';
@@ -279,13 +336,15 @@
 
     downloadStrip.innerHTML = '';
     const docx = (result.artifacts || []).find(function (artifact) { return artifact.kind === 'docx'; });
-    [
+    const downloadItems = [
       {
         href: result.docx_url || (docx && docx.download_url) || '#',
         filename: result.download_name || (docx && docx.filename) || 'output.docx',
         title: 'Tải DOCX',
         subtitle: docx ? escapeHtml(docx.filename) + ' · ' + formatSize(docx.size_bytes) : 'File Word kết quả',
-        kind: 'docx'
+        kind: 'docx',
+        previewUrl: docx && docx.preview_url,
+        previewKind: docx && docx.preview_kind
       },
       {
         href: result.artifacts_zip_url || '#',
@@ -294,13 +353,40 @@
         subtitle: 'Tất cả file output trừ DOCX',
         kind: 'artifact'
       }
-    ].forEach(function (item) {
+    ];
+    (result.artifacts || []).filter(function (artifact) {
+      return artifact.preview_url && artifact.kind !== 'docx';
+    }).slice(0, 4).forEach(function (artifact) {
+      downloadItems.push({
+        href: artifact.download_url || '#',
+        filename: artifact.filename || 'preview.pdf',
+        title: 'PDF preview',
+        subtitle: escapeHtml(artifact.filename || artifact.label || 'PDF') + ' · ' + formatSize(artifact.size_bytes),
+        kind: 'artifact',
+        previewUrl: artifact.preview_url,
+        previewKind: artifact.preview_kind
+      });
+    });
+    downloadItems.forEach(function (item) {
       const link = document.createElement('a');
       link.className = 'download-link ' + item.kind;
       link.href = item.href;
       link.download = item.filename;
       link.innerHTML = '<strong>' + item.title + '</strong><span>' + item.subtitle + '</span>';
-      downloadStrip.appendChild(link);
+      const actions = document.createElement('div');
+      actions.className = 'download-actions';
+      actions.appendChild(link);
+      if (item.previewUrl) {
+        const previewBtn = document.createElement('button');
+        previewBtn.className = 'ghost-btn compact';
+        previewBtn.type = 'button';
+        previewBtn.textContent = 'Preview';
+        previewBtn.addEventListener('click', function () {
+          openPreview(item.previewUrl, item.previewKind, item.filename);
+        });
+        actions.appendChild(previewBtn);
+      }
+      downloadStrip.appendChild(actions);
     });
 
     const warnings = result.warnings || [];
@@ -308,6 +394,18 @@
       return '<div>' + escapeHtml(warning) + '</div>';
     }).join('');
     warningList.classList.toggle('hidden', warnings.length === 0);
+  }
+
+  async function openPreview(url, kind, filename) {
+    previewPanel.classList.remove('hidden');
+    previewTitle.textContent = filename || 'Preview';
+    previewBody.innerHTML = '<div class="preview-loading">Đang tải preview...</div>';
+    if (kind === 'pdf') {
+      previewBody.innerHTML = '<iframe title="PDF preview" src="' + escapeHtml(url) + '"></iframe>';
+      return;
+    }
+    const data = await parseResponse(await fetch(url));
+    previewBody.innerHTML = '<div class="docx-preview">' + (data.html || '') + '</div>';
   }
 
   async function parseResponse(response) {
@@ -322,7 +420,7 @@
     currentJobId = jobId;
     const data = await parseResponse(await fetch('/api/jobs/' + encodeURIComponent(jobId)));
     if (!data.done) {
-      showRunning(data.message, data.status);
+      showRunning(data.message, data.status, data.progress, data.terminal_lines);
       activePoll = window.setTimeout(function () {
         pollJob(jobId).catch(function (error) {
           showError(error.message || 'Không thể kiểm tra trạng thái job.');
@@ -331,10 +429,11 @@
       return;
     }
     if (!data.ok) {
-      showError(data.error || data.message || 'Job chuyển đổi thất bại.');
+      renderTerminal(data.terminal_lines || []);
+      showError(data.error || data.message || 'Job chuyển đổi thất bại.', data.progress);
       return;
     }
-    renderResult(data.result);
+    renderResult(data.result, data);
     await refreshHistory();
   }
 
@@ -354,7 +453,17 @@
     errorState.classList.add('hidden');
     resultState.classList.add('hidden');
     setBadge('idle');
-    progressBar.style.width = '0%';
+    updateProgress(0);
+    terminalPanel.classList.add('hidden');
+    terminalOutput.textContent = '';
+    previewPanel.classList.add('hidden');
+    previewBody.innerHTML = '';
+    if (inputPreviewUrl) {
+      URL.revokeObjectURL(inputPreviewUrl);
+      inputPreviewUrl = '';
+    }
+    inputPdfFrame.removeAttribute('src');
+    inputPreview.classList.add('hidden');
   }
 
   function syncSelectedFile() {
@@ -367,6 +476,12 @@
     selectedFile.classList.remove('hidden');
     clearBtn.classList.remove('hidden');
     convertBtn.disabled = file.size > MAX_UPLOAD_BYTES || !file.name.toLowerCase().endsWith('.pdf');
+    if (inputPreviewUrl) {
+      URL.revokeObjectURL(inputPreviewUrl);
+    }
+    inputPreviewUrl = URL.createObjectURL(file);
+    inputPdfFrame.src = inputPreviewUrl;
+    inputPreview.classList.remove('hidden');
     if (file.size > MAX_UPLOAD_BYTES) {
       showError('File PDF vượt quá ' + MAX_UPLOAD_MB + ' MB.');
     } else if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -418,6 +533,16 @@
     forceOcrInput.checked = parseMethodInput.value === 'ocr';
   });
   clearBtn.addEventListener('click', resetForm);
+  clearTerminalBtn.addEventListener('click', function () {
+    terminalOutput.textContent = '';
+  });
+  closeInputPreviewBtn.addEventListener('click', function () {
+    inputPreview.classList.add('hidden');
+  });
+  closePreviewBtn.addEventListener('click', function () {
+    previewPanel.classList.add('hidden');
+    previewBody.innerHTML = '';
+  });
   refreshHistoryBtn.addEventListener('click', function () {
     refreshHistory().catch(function (error) {
       showError(error.message || 'Không thể tải lịch sử.');
@@ -462,13 +587,13 @@
     formData.set('llm_mode', document.getElementById('llmModeInput').value);
     formData.set('llm_model', document.getElementById('llmModelInput').value.trim());
     convertBtn.disabled = true;
-    showRunning('Đang đưa file vào hàng đợi...', 'queued');
+    showRunning('Đang đưa file vào hàng đợi...', 'queued', 3, []);
     try {
       const data = await parseResponse(await fetch('/api/convert', {
         method: 'POST',
         body: formData,
       }));
-      showRunning(data.message, data.status);
+      showRunning(data.message, data.status, data.progress, data.terminal_lines);
       await pollJob(data.job_id);
     } catch (error) {
       showError(error.message || 'Không thể tạo job chuyển đổi.');

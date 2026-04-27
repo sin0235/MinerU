@@ -488,6 +488,13 @@ h2 {
   padding: 22px 0;
 }
 
+.job-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .progress-track {
   height: 10px;
   overflow: hidden;
@@ -507,6 +514,57 @@ h2 {
   color: var(--muted);
 }
 
+#progressPercent {
+  color: var(--primary);
+  font-size: 13px;
+}
+
+.terminal-panel,
+.input-preview,
+.preview-panel {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfb;
+  overflow: hidden;
+}
+
+.input-preview {
+  margin-top: 16px;
+}
+
+.preview-head {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-strong);
+}
+
+.terminal-panel pre {
+  height: 220px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: #d9efe7;
+  background: #10201b;
+  font: 12px/1.5 "IBM Plex Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.input-preview iframe,
+.preview-body iframe {
+  width: 100%;
+  height: 460px;
+  display: block;
+  border: 0;
+  background: #ffffff;
+}
+
 .result-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -518,6 +576,13 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.download-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
 }
 
 .download-link {
@@ -540,6 +605,50 @@ h2 {
 .download-link span {
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.preview-body {
+  min-height: 220px;
+  max-height: 620px;
+  overflow: auto;
+  background: #ffffff;
+}
+
+.preview-loading,
+.doc-preview-note {
+  margin: 0;
+  padding: 18px;
+  color: var(--muted);
+}
+
+.docx-preview {
+  padding: 18px;
+  color: #17231f;
+}
+
+.docx-preview h3 {
+  margin: 14px 0 8px;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.docx-preview p {
+  margin: 0 0 10px;
+  line-height: 1.55;
+}
+
+.docx-preview table {
+  width: 100%;
+  margin: 12px 0;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.docx-preview td {
+  padding: 8px;
+  border: 1px solid var(--line);
+  vertical-align: top;
   overflow-wrap: anywhere;
 }
 
@@ -632,7 +741,8 @@ h2 {
 
   .conversion-grid,
   .result-summary,
-  .download-strip {
+  .download-strip,
+  .download-actions {
     grid-template-columns: 1fr;
   }
 

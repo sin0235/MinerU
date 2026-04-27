@@ -7,6 +7,10 @@ import zipfile
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_file, url_for
+from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+from markupsafe import escape
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 
 try:
@@ -166,6 +170,13 @@ def _artifact_payload_with_urls(job_id: str, result: dict) -> dict:
             job_id=job_id,
             filename=item["relative_path"],
         )
+        suffix = Path(item.get("filename") or "").suffix.lower()
+        if suffix == ".docx":
+            item["preview_url"] = url_for("preview_docx", job_id=job_id, filename=item["relative_path"])
+            item["preview_kind"] = "docx"
+        elif suffix == ".pdf":
+            item["preview_url"] = url_for("preview_file_inline", job_id=job_id, filename=item["relative_path"])
+            item["preview_kind"] = "pdf"
         artifacts.append(item)
     payload["artifacts"] = artifacts
     docx = next((artifact for artifact in artifacts if artifact.get("kind") == "docx"), None)
@@ -250,6 +261,9 @@ def api_job_status(job_id: str):
                 "done": False,
                 "job_id": snapshot["id"],
                 "status": status,
+                "stage": snapshot.get("stage") or status,
+                "progress": snapshot.get("progress") or (3 if status == "queued" else 10),
+                "terminal_lines": snapshot.get("terminal_lines") or [],
                 "message": snapshot["message"],
                 "original_filename": snapshot["original_filename"],
             }
@@ -263,6 +277,9 @@ def api_job_status(job_id: str):
                 "done": True,
                 "job_id": snapshot["id"],
                 "status": status,
+                "stage": snapshot.get("stage") or status,
+                "progress": snapshot.get("progress") or 100,
+                "terminal_lines": snapshot.get("terminal_lines") or [],
                 "message": snapshot["message"],
                 "result": result,
             }
@@ -274,6 +291,9 @@ def api_job_status(job_id: str):
             "done": True,
             "job_id": snapshot["id"],
             "status": status,
+            "stage": snapshot.get("stage") or status,
+            "progress": snapshot.get("progress") or 0,
+            "terminal_lines": snapshot.get("terminal_lines") or [],
             "error": snapshot["error"] or snapshot["message"],
             "message": snapshot["message"],
         }
@@ -282,12 +302,37 @@ def api_job_status(job_id: str):
 
 @app.route("/downloads/<job_id>/<path:filename>")
 def download_file(job_id: str, filename: str):
+    if filename == "artifacts.zip":
+        return download_artifacts_zip(job_id)
     try:
         path = converter.resolve_download(job_id, filename)
     except FileNotFoundError:
         abort(404, description="Khong tim thay file tai xuong.")
     guessed_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return send_file(path, mimetype=guessed_type, as_attachment=True, download_name=path.name)
+
+
+@app.route("/previews/<job_id>/<path:filename>")
+def preview_file_inline(job_id: str, filename: str):
+    try:
+        path = converter.resolve_download(job_id, filename)
+    except FileNotFoundError:
+        abort(404, description="Khong tim thay file preview.")
+    if path.suffix.lower() != ".pdf":
+        abort(400, description="Chi preview inline PDF qua route nay.")
+    guessed_type = mimetypes.guess_type(path.name)[0] or "application/pdf"
+    return send_file(path, mimetype=guessed_type, as_attachment=False, download_name=path.name)
+
+
+@app.route("/api/previews/<job_id>/<path:filename>")
+def preview_docx(job_id: str, filename: str):
+    try:
+        path = converter.resolve_download(job_id, filename)
+    except FileNotFoundError:
+        abort(404, description="Khong tim thay file preview.")
+    if path.suffix.lower() != ".docx":
+        abort(400, description="Chi ho tro preview DOCX.")
+    return jsonify({"ok": True, "filename": path.name, "html": _docx_preview_html(path)})
 
 
 @app.route("/downloads/<job_id>/artifacts.zip")
@@ -313,6 +358,42 @@ def download_artifacts_zip(job_id: str):
         as_attachment=True,
         download_name="artifacts_without_docx.zip",
     )
+
+
+def _docx_preview_html(path: Path, *, max_blocks: int = 220) -> str:
+    document = Document(path)
+    pieces: list[str] = []
+    block_count = 0
+    for block in _iter_docx_blocks(document):
+        if block_count >= max_blocks:
+            pieces.append('<p class="doc-preview-note">Preview da rut gon de giu giao dien nhe.</p>')
+            break
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if not text:
+                continue
+            style_name = (block.style.name if block.style is not None else "").lower()
+            tag = "h3" if "heading" in style_name or "title" in style_name else "p"
+            pieces.append(f"<{tag}>{escape(text)}</{tag}>")
+        elif isinstance(block, Table):
+            rows: list[str] = []
+            for row in block.rows[:40]:
+                cells = "".join(f"<td>{escape(cell.text.strip())}</td>" for cell in row.cells[:12])
+                rows.append(f"<tr>{cells}</tr>")
+            if rows:
+                pieces.append(f"<table><tbody>{''.join(rows)}</tbody></table>")
+        block_count += 1
+    if not pieces:
+        return '<p class="doc-preview-note">DOCX khong co van ban preview duoc.</p>'
+    return "".join(pieces)
+
+
+def _iter_docx_blocks(document: Document):
+    for child in document.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            yield Paragraph(child, document)
+        elif child.tag.endswith("}tbl"):
+            yield Table(child, document)
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
