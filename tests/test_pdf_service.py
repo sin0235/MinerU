@@ -20,10 +20,13 @@ from webapp.pdf_service import (
     NormalizedBlock,
     OPENROUTER_CHAT_COMPLETIONS_URL,
     PDFConversionService,
+    DEFAULT_ROUTER9_BASE_URL,
     _format_exam_blocks,
     _llm_api_key_env,
+    _llm_base_url_value,
     _llm_model_for_provider,
     _llm_provider_for_model,
+    list_openai_compatible_models,
     _mineru_cli_from_python,
     _split_math_segments,
 )
@@ -459,6 +462,122 @@ def test_openrouter_llm_failure_falls_back_to_nvidia(monkeypatch, tmp_path: Path
     assert summary["used_models"] == [{"chunk_index": 0, "model": "google/gemma-3-27b-it", "provider": "nvidia"}]
 
 
+def test_router9_llm_mapping_and_request(monkeypatch, tmp_path: Path) -> None:
+    assert _llm_provider_for_model("router9/cc/claude-opus-4-6") == "router9"
+    assert _llm_provider_for_model("9route/cc/claude-opus-4-6") == "router9"
+    assert _llm_api_key_env("router9") == "ROUTER9_API_KEY"
+    assert _llm_base_url_value("router9") == DEFAULT_ROUTER9_BASE_URL
+    assert _llm_model_for_provider("router9/cc/claude-opus-4-6") == "cc/claude-opus-4-6"
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":[{"type":"text","text":"{}"}]}}]}'
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["authorization"] = request.get_header("Authorization")
+        return FakeResponse()
+
+    monkeypatch.setattr("webapp.pdf_service.urllib.request.urlopen", fake_urlopen)
+
+    service = PDFConversionService(tmp_path)
+    response = service._call_llm_chat_completion(
+        [{"role": "user", "content": "ping"}],
+        model="router9/cc/claude-opus-4-6",
+        api_key="router-key",
+    )
+
+    assert response["content"] == "{}"
+    assert captured["url"] == f"{DEFAULT_ROUTER9_BASE_URL}/chat/completions"
+    assert captured["payload"]["model"] == "cc/claude-opus-4-6"
+    assert captured["authorization"] == "Bearer router-key"
+
+
+def test_router9_model_scan_uses_openai_compatible_models_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"data":[{"id":"cc/claude-opus-4-6","owned_by":"claude-code","context_length":200000}]}'
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("webapp.pdf_service.urllib.request.urlopen", fake_urlopen)
+
+    models = list_openai_compatible_models("router9", api_key="secret")
+
+    assert captured["url"] == f"{DEFAULT_ROUTER9_BASE_URL}/models"
+    assert captured["authorization"] == "Bearer secret"
+    assert captured["timeout"] == 60
+    assert models == [
+        {
+            "id": "cc/claude-opus-4-6",
+            "label": "cc/claude-opus-4-6",
+            "owned_by": "claude-code",
+            "created": None,
+            "context_length": 200000,
+        }
+    ]
+
+
+def test_router9_runtime_provider_uses_override_without_leaking_key(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    review_dir = tmp_path / "review"
+    calls = []
+
+    def fake_call(messages, **kwargs):
+        calls.append(kwargs)
+        return {"content": '{"findings":[],"patches":[]}', "reasoning_details": None}
+
+    monkeypatch.setattr(service, "_call_llm_chat_completion", fake_call)
+
+    service._run_llm_review_layer(
+        [NormalizedBlock(kind="paragraph", text="abc", page_idx=0)],
+        review_dir,
+        ConversionOptions(
+            llm_mode="review",
+            llm_provider="router9",
+            llm_model="cc/claude-opus-4-6",
+            llm_api_key="runtime-secret",
+            llm_base_url="http://localhost:20128/v1",
+            router9_only=True,
+        ),
+    )
+
+    assert calls == [
+        {
+            "model": "router9/cc/claude-opus-4-6",
+            "api_key": "runtime-secret",
+            "reasoning": False,
+            "base_url": "http://localhost:20128/v1",
+        }
+    ]
+    summary_text = (review_dir / "review_request_summary.json").read_text(encoding="utf-8")
+    assert "runtime-secret" not in summary_text
+    summary = json.loads(summary_text)
+    assert summary["requested_provider"] == "router9"
+    assert summary["attempted_models"] == [{"model": "router9/cc/claude-opus-4-6", "provider": "router9"}]
+
+
 def test_run_mineru_passes_cli_options_and_config(monkeypatch, tmp_path: Path) -> None:
     service = PDFConversionService(tmp_path)
     captured = {}
@@ -561,9 +680,25 @@ def test_pdf_to_word_uses_llm_model_select() -> None:
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
+    assert '<select id="llmProviderInput" name="llm_provider">' in html
     assert '<select id="llmModelInput" name="llm_model">' in html
     assert "openrouter/google/gemma-4-26b-a4b-it:free" in html
+    assert "9route only" in html
     assert 'list="llmModelOptions"' not in html
+
+
+def test_llm_provider_defaults_route_hides_api_keys(monkeypatch) -> None:
+    monkeypatch.setenv("ROUTER9_API_KEY", "router-secret")
+    client = app.test_client()
+
+    response = client.get("/api/llm/providers")
+
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    payload = response.get_json()
+    assert "router-secret" not in text
+    assert payload["providers"]["router9"]["api_key_configured"] is True
+    assert payload["providers"]["router9"]["base_url"] == DEFAULT_ROUTER9_BASE_URL
 
 
 def test_artifacts_zip_is_scoped_to_runtime_job_and_excludes_docx(tmp_path: Path) -> None:

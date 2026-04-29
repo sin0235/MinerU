@@ -19,12 +19,19 @@ try:
         ALLOWED_LANGUAGES,
         ALLOWED_LATEX_DELIMITER_TYPES,
         ALLOWED_LLM_MODES,
+        ALLOWED_LLM_PROVIDERS,
         ALLOWED_PARSE_METHODS,
+        DEFAULT_ROUTER9_BASE_URL,
         DEFAULT_NVIDIA_LLM_MODEL,
         LLM_MODEL_OPTIONS,
+        list_openai_compatible_models,
         ConversionJobManager,
         ConversionOptions,
         PDFConversionService,
+        _llm_api_key_env,
+        _llm_api_key_value,
+        _llm_base_url_value,
+        _llm_provider_for_model,
     )
 except ImportError:  # pragma: no cover
     from pdf_service import (
@@ -32,12 +39,19 @@ except ImportError:  # pragma: no cover
         ALLOWED_LANGUAGES,
         ALLOWED_LATEX_DELIMITER_TYPES,
         ALLOWED_LLM_MODES,
+        ALLOWED_LLM_PROVIDERS,
         ALLOWED_PARSE_METHODS,
+        DEFAULT_ROUTER9_BASE_URL,
         DEFAULT_NVIDIA_LLM_MODEL,
         LLM_MODEL_OPTIONS,
+        list_openai_compatible_models,
         ConversionJobManager,
         ConversionOptions,
         PDFConversionService,
+        _llm_api_key_env,
+        _llm_api_key_value,
+        _llm_base_url_value,
+        _llm_provider_for_model,
     )
 
 
@@ -104,9 +118,43 @@ def _converter_options_payload() -> dict:
             ("review", "Chỉ kiểm tra"),
             ("correct", "Tự sửa lỗi rõ ràng"),
         ],
-        "llm_api_configured": bool((os.getenv("NVIDIA_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "").strip()),
+        "llm_api_configured": any(
+            _llm_api_key_value(provider) for provider in ("nvidia", "openrouter", "router9")
+        ),
         "default_llm_model": default_llm_model,
         "llm_models": LLM_MODEL_OPTIONS,
+        "llm_providers": [
+            ("auto", "Auto theo model"),
+            ("nvidia", "NVIDIA"),
+            ("openrouter", "OpenRouter"),
+            ("router9", "9route / 9router"),
+        ],
+        "provider_defaults": _provider_defaults_payload(),
+    }
+
+
+def _provider_defaults_payload() -> dict:
+    return {
+        "default_provider": (os.getenv("PDF_WORD_LLM_PROVIDER") or "auto").strip() or "auto",
+        "nvidia": {
+            "api_key_configured": bool(_llm_api_key_value("nvidia")),
+            "api_key_env": _llm_api_key_env("nvidia"),
+            "base_url": _llm_base_url_value("nvidia"),
+            "model": DEFAULT_NVIDIA_LLM_MODEL,
+        },
+        "openrouter": {
+            "api_key_configured": bool(_llm_api_key_value("openrouter")),
+            "api_key_env": _llm_api_key_env("openrouter"),
+            "base_url": _llm_base_url_value("openrouter"),
+            "model": "google/gemma-4-26b-a4b-it:free",
+        },
+        "router9": {
+            "api_key_configured": bool(_llm_api_key_value("router9")),
+            "api_key_env": _llm_api_key_env("router9"),
+            "base_url": _llm_base_url_value("router9") or DEFAULT_ROUTER9_BASE_URL,
+            "model": (os.getenv("ROUTER9_TEXT_MODEL") or os.getenv("ROUTE9_TEXT_MODEL") or "").strip(),
+            "only_mode": _env_flag("ROUTER9_ONLY", default=False) or _env_flag("ROUTE9_ONLY", default=False),
+        },
     }
 
 
@@ -117,16 +165,21 @@ def _conversion_options_from_request() -> ConversionOptions:
     language = _choice("language", ALLOWED_LANGUAGES, "ch")
     latex_delimiters_type = _choice("latex_delimiters_type", ALLOWED_LATEX_DELIMITER_TYPES, "b")
     llm_mode = _choice("llm_mode", ALLOWED_LLM_MODES, "off")
+    llm_provider = _choice("llm_provider", ALLOWED_LLM_PROVIDERS, _default_llm_provider())
     default_llm_model = _default_llm_model()
     llm_model = (form.get("llm_model") or default_llm_model).strip() or default_llm_model
+    llm_api_key = (form.get("llm_api_key") or "").strip()
+    llm_base_url = (form.get("llm_base_url") or "").strip()
+    router9_only = _form_bool("router9_only", default=False)
     start_page_ui = _optional_int(form.get("start_page"), default=1, minimum=1, maximum=99999)
     end_page_ui = _optional_int(form.get("end_page"), default=None, minimum=1, maximum=99999)
     start_page = max(0, start_page_ui - 1)
     end_page = end_page_ui - 1 if end_page_ui is not None else None
     if end_page is not None and end_page < start_page:
         raise ValueError("Trang ket thuc phai lon hon hoac bang trang bat dau.")
-    if llm_mode != "off" and not _llm_api_key_configured(llm_model):
-        missing_key = "OPENROUTER_API_KEY" if llm_model.lower().startswith("openrouter/") else "NVIDIA_API_KEY"
+    if llm_mode != "off" and not _llm_api_key_configured(llm_model, llm_provider, llm_api_key):
+        provider = _effective_llm_provider(llm_model, llm_provider)
+        missing_key = _llm_api_key_env(provider)
         raise ValueError(f"Chua cau hinh {missing_key} nen khong the bat LLM review.")
     return ConversionOptions(
         backend=backend,
@@ -140,8 +193,12 @@ def _conversion_options_from_request() -> ConversionOptions:
         latex_delimiters_type=latex_delimiters_type,
         exam_format=_form_bool("exam_format", default=False),
         llm_mode=llm_mode,
+        llm_provider=llm_provider,
         llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_base_url=llm_base_url,
         llm_reasoning=_form_bool("llm_reasoning", default=False),
+        router9_only=router9_only,
     )
 
 
@@ -157,14 +214,28 @@ def _form_bool(name: str, *, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _llm_api_key_configured(model: str) -> bool:
-    if model.strip().lower().startswith("openrouter/"):
-        return bool((os.getenv("OPENROUTER_API_KEY") or "").strip())
-    return bool((os.getenv("NVIDIA_API_KEY") or "").strip())
+def _llm_api_key_configured(model: str, provider: str = "auto", runtime_api_key: str = "") -> bool:
+    return bool(_llm_api_key_value(_effective_llm_provider(model, provider), runtime_api_key))
+
+
+def _effective_llm_provider(model: str, provider: str = "auto") -> str:
+    value = (provider or "auto").strip().lower()
+    if value in {"9route", "9router"}:
+        return "router9"
+    if value in ALLOWED_LLM_PROVIDERS and value != "auto":
+        return value
+    return _llm_provider_for_model(model)
 
 
 def _default_llm_model() -> str:
     return (os.getenv("PDF_WORD_LLM_MODEL") or DEFAULT_NVIDIA_LLM_MODEL).strip() or DEFAULT_NVIDIA_LLM_MODEL
+
+
+def _default_llm_provider() -> str:
+    provider = (os.getenv("PDF_WORD_LLM_PROVIDER") or "auto").strip().lower()
+    if provider in {"9route", "9router"}:
+        return "router9"
+    return provider if provider in ALLOWED_LLM_PROVIDERS else "auto"
 
 
 def _optional_int(raw: str | None, *, default: int | None, minimum: int, maximum: int) -> int | None:
@@ -235,6 +306,31 @@ def api_status():
             ],
         }
     )
+
+
+@app.route("/api/llm/providers")
+def api_llm_providers():
+    return jsonify({"ok": True, "providers": _provider_defaults_payload()})
+
+
+@app.route("/api/llm/providers/<provider>/models", methods=["POST"])
+def api_llm_provider_models(provider: str):
+    provider = provider.strip().lower()
+    if provider in {"9route", "9router"}:
+        provider = "router9"
+    if provider not in {"openrouter", "router9", "nvidia"}:
+        return jsonify({"ok": False, "error": "Provider khong hop le."}), 400
+    payload = request.get_json(silent=True) or {}
+    api_key = str(payload.get("api_key") or "").strip()
+    base_url = str(payload.get("base_url") or "").strip()
+    try:
+        models = list_openai_compatible_models(provider, api_key=api_key, base_url=base_url)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Failed to scan LLM provider models")
+        return jsonify({"ok": False, "error": f"Khong the quet model: {exc}"}), 500
+    return jsonify({"ok": True, "provider": provider, "models": models})
 
 
 @app.route("/api/convert", methods=["POST"])

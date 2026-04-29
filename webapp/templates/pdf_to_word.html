@@ -88,6 +88,14 @@
             </select>
           </label>
           <label>
+            <span>Provider</span>
+            <select id="llmProviderInput" name="llm_provider">
+              {% for value, label in converter_options.llm_providers %}
+                <option value="{{ value }}" {{ 'selected' if value == converter_options.provider_defaults.default_provider else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
             <span>LLM model</span>
             <select id="llmModelInput" name="llm_model">
               {% for value, label in converter_options.llm_models %}
@@ -118,7 +126,34 @@
             <input id="llmReasoningInput" name="llm_reasoning" type="checkbox" />
             <span>Bật reasoning OpenRouter</span>
           </label>
+          <label>
+            <input id="router9OnlyInput" name="router9_only" type="checkbox" {{ 'checked' if converter_options.provider_defaults.router9.only_mode else '' }} />
+            <span>9route only</span>
+          </label>
         </div>
+
+        <section class="provider-panel" id="providerPanel">
+          <div class="section-title compact">
+            <h2>Quản lý provider</h2>
+            <button class="ghost-btn compact" id="scanProviderModelsBtn" type="button">Quét model</button>
+          </div>
+          <div class="provider-grid">
+            <label>
+              <span>API key override</span>
+              <input id="llmApiKeyInput" name="llm_api_key" type="password" autocomplete="off" placeholder="Để trống để dùng env" />
+            </label>
+            <label>
+              <span>Base URL override</span>
+              <input id="llmBaseUrlInput" name="llm_base_url" type="url" placeholder="{{ converter_options.provider_defaults.router9.base_url }}" />
+            </label>
+            <label class="provider-wide">
+              <span>Custom model</span>
+              <input id="llmCustomModelInput" type="text" placeholder="Ví dụ: cc/claude-opus-4-6 hoặc router9/cc/..." />
+            </label>
+          </div>
+          <div class="provider-status" id="providerStatus"></div>
+          <div class="model-scan-list hidden" id="modelScanList"></div>
+        </section>
 
         <label class="server-url-field">
           <span>OpenAI-compatible URL</span>
@@ -243,11 +278,22 @@
 (function () {
   const MAX_UPLOAD_MB = {{ max_upload_mb }};
   const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+  const PROVIDER_DEFAULTS = {{ converter_options.provider_defaults|tojson }};
+  const BUILTIN_LLM_MODELS = {{ converter_options.llm_models|tojson }};
 
   const form = document.getElementById('convertForm');
   const pdfInput = document.getElementById('pdfInput');
   const parseMethodInput = document.getElementById('parseMethodInput');
   const forceOcrInput = document.getElementById('forceOcrInput');
+  const llmProviderInput = document.getElementById('llmProviderInput');
+  const llmModelInput = document.getElementById('llmModelInput');
+  const llmApiKeyInput = document.getElementById('llmApiKeyInput');
+  const llmBaseUrlInput = document.getElementById('llmBaseUrlInput');
+  const llmCustomModelInput = document.getElementById('llmCustomModelInput');
+  const router9OnlyInput = document.getElementById('router9OnlyInput');
+  const scanProviderModelsBtn = document.getElementById('scanProviderModelsBtn');
+  const providerStatus = document.getElementById('providerStatus');
+  const modelScanList = document.getElementById('modelScanList');
   const dropZone = document.getElementById('dropZone');
   const selectedFile = document.getElementById('selectedFile');
   const convertBtn = document.getElementById('convertBtn');
@@ -287,11 +333,189 @@
   let activePoll = null;
   let currentJobId = null;
   let inputPreviewUrl = '';
+  let providerSettings = loadProviderSettings();
 
   function escapeHtml(value) {
     const span = document.createElement('span');
     span.textContent = String(value || '');
     return span.innerHTML;
+  }
+
+  function normalizeProvider(provider) {
+    const value = String(provider || 'auto').toLowerCase();
+    if (value === '9route' || value === '9router') return 'router9';
+    return ['auto', 'nvidia', 'openrouter', 'router9'].includes(value) ? value : 'auto';
+  }
+
+  function loadProviderSettings() {
+    try {
+      return JSON.parse(localStorage.getItem('pdfWordProviderSettings') || '{}') || {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function saveProviderSettings() {
+    localStorage.setItem('pdfWordProviderSettings', JSON.stringify(providerSettings));
+  }
+
+  function providerModelValue(provider, modelId) {
+    if (!modelId) return '';
+    if (modelId.startsWith('openrouter/') || modelId.startsWith('router9/') || modelId.startsWith('9route/')) {
+      return modelId;
+    }
+    if (provider === 'openrouter') return 'openrouter/' + modelId;
+    if (provider === 'router9') return 'router9/' + modelId;
+    return modelId;
+  }
+
+  function effectiveProvider() {
+    const provider = normalizeProvider(llmProviderInput.value);
+    if (provider !== 'auto') return provider;
+    const model = llmCustomModelInput.value.trim() || llmModelInput.value;
+    if (model.startsWith('openrouter/')) return 'openrouter';
+    if (model.startsWith('router9/') || model.startsWith('9route/')) return 'router9';
+    return 'nvidia';
+  }
+
+  function currentProviderConfig(provider) {
+    provider = normalizeProvider(provider);
+    return providerSettings[provider] || {};
+  }
+
+  function updateProviderStatus(message, tone) {
+    const provider = normalizeProvider(llmProviderInput.value);
+    const resolved = effectiveProvider();
+    const defaults = PROVIDER_DEFAULTS[resolved] || {};
+    const configured = defaults.api_key_configured || !!llmApiKeyInput.value.trim();
+    const base = llmBaseUrlInput.value.trim() || defaults.base_url || '';
+    const prefix = configured ? 'API key sẵn sàng' : 'Chưa có API key';
+    providerStatus.className = 'provider-status ' + (tone || (configured ? 'ready' : 'blocked'));
+    providerStatus.textContent = message || `${prefix} cho ${provider === 'auto' ? resolved : provider}${base ? ' · ' + base : ''}`;
+  }
+
+  function renderModelOptions() {
+    const selectedBefore = llmModelInput.value;
+    const provider = normalizeProvider(llmProviderInput.value);
+    const optionMap = new Map();
+    BUILTIN_LLM_MODELS.forEach(function (item) {
+      optionMap.set(item[0], item[1]);
+    });
+    ['openrouter', 'router9', 'nvidia'].forEach(function (key) {
+      const config = providerSettings[key] || {};
+      const defaults = PROVIDER_DEFAULTS[key] || {};
+      if (defaults.model) {
+        const value = providerModelValue(key, defaults.model);
+        optionMap.set(value, (key === 'router9' ? '9route: ' : key + ': ') + defaults.model);
+      }
+      (config.models || []).forEach(function (model) {
+        const value = providerModelValue(key, model.id);
+        optionMap.set(value, (key === 'router9' ? '9route: ' : key + ': ') + model.id);
+      });
+      if (config.model) {
+        const value = providerModelValue(key, config.model);
+        optionMap.set(value, (key === 'router9' ? '9route: ' : key + ': ') + config.model);
+      }
+    });
+    llmModelInput.innerHTML = '';
+    optionMap.forEach(function (label, value) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      llmModelInput.appendChild(option);
+    });
+    if (optionMap.has(selectedBefore)) {
+      llmModelInput.value = selectedBefore;
+    } else {
+      const config = currentProviderConfig(provider);
+      const defaults = PROVIDER_DEFAULTS[provider] || {};
+      const preferred = providerModelValue(provider, config.model || defaults.model || '');
+      if (preferred && optionMap.has(preferred)) {
+        llmModelInput.value = preferred;
+      }
+    }
+  }
+
+  function renderScannedModels() {
+    const provider = normalizeProvider(llmProviderInput.value);
+    const config = currentProviderConfig(provider);
+    const models = config.models || [];
+    if (provider !== 'router9' || !models.length) {
+      modelScanList.classList.add('hidden');
+      modelScanList.innerHTML = '';
+      return;
+    }
+    modelScanList.classList.remove('hidden');
+    modelScanList.innerHTML = models.slice(0, 80).map(function (model) {
+      const selected = providerModelValue('router9', model.id) === llmModelInput.value ? ' active' : '';
+      return '<button type="button" class="model-chip' + selected + '" data-model="' + escapeHtml(model.id) + '">' +
+        '<strong>' + escapeHtml(model.id) + '</strong>' +
+        (model.context_length ? '<span>' + Number(model.context_length).toLocaleString() + ' ctx</span>' : '') +
+      '</button>';
+    }).join('');
+  }
+
+  function syncProviderUi() {
+    const provider = normalizeProvider(llmProviderInput.value);
+    const config = currentProviderConfig(provider);
+    const defaults = PROVIDER_DEFAULTS[provider === 'auto' ? effectiveProvider() : provider] || {};
+    llmApiKeyInput.value = config.api_key || '';
+    llmBaseUrlInput.value = config.base_url || '';
+    llmBaseUrlInput.placeholder = defaults.base_url || 'Backend default';
+    scanProviderModelsBtn.disabled = !['openrouter', 'router9', 'nvidia'].includes(provider) || provider === 'auto';
+    renderModelOptions();
+    renderScannedModels();
+    updateProviderStatus();
+  }
+
+  function persistCurrentProviderFields() {
+    const provider = normalizeProvider(llmProviderInput.value);
+    if (provider === 'auto') return;
+    providerSettings[provider] = {
+      ...(providerSettings[provider] || {}),
+      api_key: llmApiKeyInput.value.trim(),
+      base_url: llmBaseUrlInput.value.trim(),
+      model: llmCustomModelInput.value.trim() || llmModelInput.value.replace(/^(openrouter|router9|9route)\//, ''),
+    };
+    saveProviderSettings();
+  }
+
+  async function scanProviderModels() {
+    const provider = normalizeProvider(llmProviderInput.value);
+    if (provider === 'auto') {
+      updateProviderStatus('Chọn provider cụ thể trước khi quét model.', 'blocked');
+      return;
+    }
+    scanProviderModelsBtn.disabled = true;
+    updateProviderStatus('Đang quét model từ provider...', 'loading');
+    try {
+      const data = await parseResponse(await fetch('/api/llm/providers/' + encodeURIComponent(provider) + '/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: llmApiKeyInput.value.trim(),
+          base_url: llmBaseUrlInput.value.trim(),
+        }),
+      }));
+      providerSettings[provider] = {
+        ...(providerSettings[provider] || {}),
+        api_key: llmApiKeyInput.value.trim(),
+        base_url: llmBaseUrlInput.value.trim(),
+        models: data.models || [],
+        scanned_at: new Date().toISOString(),
+      };
+      if ((data.models || []).length && !llmCustomModelInput.value.trim()) {
+        providerSettings[provider].model = data.models[0].id;
+      }
+      saveProviderSettings();
+      renderModelOptions();
+      renderScannedModels();
+      updateProviderStatus('Đã quét ' + (data.models || []).length + ' model.', 'ready');
+    } catch (error) {
+      updateProviderStatus(error.message || 'Không thể quét model provider.', 'blocked');
+    } finally {
+      scanProviderModelsBtn.disabled = false;
+    }
   }
 
   function setBadge(status) {
@@ -605,6 +829,38 @@
   parseMethodInput.addEventListener('change', function () {
     forceOcrInput.checked = parseMethodInput.value === 'ocr';
   });
+  llmProviderInput.addEventListener('change', syncProviderUi);
+  llmModelInput.addEventListener('change', function () {
+    persistCurrentProviderFields();
+    renderScannedModels();
+    updateProviderStatus();
+  });
+  llmApiKeyInput.addEventListener('change', function () {
+    persistCurrentProviderFields();
+    updateProviderStatus();
+  });
+  llmBaseUrlInput.addEventListener('change', function () {
+    persistCurrentProviderFields();
+    updateProviderStatus();
+  });
+  llmCustomModelInput.addEventListener('input', updateProviderStatus);
+  router9OnlyInput.addEventListener('change', function () {
+    if (router9OnlyInput.checked) {
+      llmProviderInput.value = 'router9';
+      syncProviderUi();
+    }
+  });
+  scanProviderModelsBtn.addEventListener('click', scanProviderModels);
+  modelScanList.addEventListener('click', function (event) {
+    const button = event.target.closest('.model-chip');
+    if (!button) return;
+    const provider = normalizeProvider(llmProviderInput.value);
+    const modelId = button.dataset.model || '';
+    llmModelInput.value = providerModelValue(provider, modelId);
+    llmCustomModelInput.value = '';
+    persistCurrentProviderFields();
+    renderScannedModels();
+  });
   clearBtn.addEventListener('click', resetForm);
   clearTerminalBtn.addEventListener('click', function () {
     terminalOutput.textContent = '';
@@ -658,8 +914,13 @@
     formData.set('end_page', document.getElementById('endPageInput').value || '');
     formData.set('server_url', document.getElementById('serverUrlInput').value.trim());
     formData.set('llm_mode', document.getElementById('llmModeInput').value);
-    formData.set('llm_model', document.getElementById('llmModelInput').value.trim());
+    formData.set('llm_provider', llmProviderInput.value);
+    formData.set('llm_model', (llmCustomModelInput.value.trim() || llmModelInput.value.trim()));
+    formData.set('llm_api_key', llmApiKeyInput.value.trim());
+    formData.set('llm_base_url', llmBaseUrlInput.value.trim());
     formData.set('llm_reasoning', document.getElementById('llmReasoningInput').checked ? 'true' : 'false');
+    formData.set('router9_only', router9OnlyInput.checked ? 'true' : 'false');
+    persistCurrentProviderFields();
     convertBtn.disabled = true;
     showRunning({ message: 'Đang đưa file vào hàng đợi...', status: 'queued', progress: 3, terminal_lines: [], elapsed_seconds: 0, eta_seconds: null, stage: 'queued' });
     try {
@@ -676,6 +937,7 @@
     }
   });
 
+  syncProviderUi();
   refreshHistory().catch(function () {});
 })();
 </script>

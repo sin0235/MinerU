@@ -373,6 +373,114 @@ h2 {
   margin-top: 12px;
 }
 
+.provider-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfb;
+}
+
+.section-title.compact {
+  margin-bottom: 0;
+}
+
+.section-title.compact h2 {
+  font-size: 16px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.provider-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.provider-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.provider-grid input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--ink);
+  background: #ffffff;
+}
+
+.provider-wide {
+  grid-column: 1 / -1;
+}
+
+.provider-status {
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.provider-status.ready {
+  color: var(--success);
+  border-color: rgba(21, 115, 72, 0.24);
+  background: var(--success-soft);
+}
+
+.provider-status.blocked {
+  color: var(--warning);
+  border-color: rgba(154, 97, 22, 0.28);
+  background: #fff4df;
+}
+
+.model-scan-list {
+  max-height: 220px;
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+}
+
+.model-chip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: #ffffff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.model-chip.active {
+  border-color: rgba(31, 111, 88, 0.35);
+  background: var(--primary-soft);
+}
+
+.model-chip strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-chip span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .ghost-btn.compact {
   min-height: 34px;
   padding: 0 12px;
@@ -751,7 +859,8 @@ h2 {
   }
 
   .option-grid,
-  .toggle-grid {
+  .toggle-grid,
+  .provider-grid {
     grid-template-columns: 1fr;
   }
 }

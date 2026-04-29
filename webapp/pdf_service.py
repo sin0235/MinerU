@@ -68,6 +68,10 @@ ALLOWED_LATEX_DELIMITER_TYPES = {"a", "b", "all"}
 ALLOWED_LLM_MODES = {"off", "review", "correct"}
 DEFAULT_NVIDIA_LLM_MODEL = "google/gemma-3-27b-it"
 OPENROUTER_MODEL_PREFIX = "openrouter/"
+ROUTER9_MODEL_PREFIX = "router9/"
+NINEROUTE_MODEL_PREFIX = "9route/"
+DEFAULT_ROUTER9_BASE_URL = "http://localhost:20128/v1"
+ALLOWED_LLM_PROVIDERS = {"auto", "nvidia", "openrouter", "router9"}
 LLM_MODEL_OPTIONS = [
     (DEFAULT_NVIDIA_LLM_MODEL, "NVIDIA: Gemma 3 27B IT"),
     ("openrouter/google/gemma-4-26b-a4b-it:free", "OpenRouter: Gemma 4 26B A4B IT Free"),
@@ -101,8 +105,12 @@ class ConversionOptions:
     latex_delimiters_type: str = "b"
     exam_format: bool = False
     llm_mode: str = "off"
+    llm_provider: str = "auto"
     llm_model: str = DEFAULT_NVIDIA_LLM_MODEL
+    llm_api_key: str = ""
+    llm_base_url: str = ""
     llm_reasoning: bool = False
+    router9_only: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -117,8 +125,12 @@ class ConversionOptions:
             "latex_delimiters_type": self.latex_delimiters_type,
             "exam_format": self.exam_format,
             "llm_mode": self.llm_mode,
+            "llm_provider": self.llm_provider,
             "llm_model": self.llm_model,
+            "llm_api_key_configured": bool(self.llm_api_key),
+            "llm_base_url": self.llm_base_url,
             "llm_reasoning": self.llm_reasoning,
+            "router9_only": self.router9_only,
         }
 
 
@@ -629,16 +641,18 @@ class PDFConversionService:
         warnings: list[str] = []
         review_dir.mkdir(parents=True, exist_ok=True)
         requested_model = options.llm_model or DEFAULT_NVIDIA_LLM_MODEL
-        model_attempts = _llm_model_attempts(requested_model)
+        model_attempts = _llm_model_attempts_for_options(options)
+        selected_provider = _llm_provider_for_options(options)
         available_attempts = [
-            (model, provider, api_key)
+            (model, provider, api_key, base_url)
             for model, provider in model_attempts
-            if (api_key := (os.getenv(_llm_api_key_env(provider)) or "").strip())
+            if (api_key := _llm_api_key_value(provider, options.llm_api_key if provider == selected_provider else ""))
+            for base_url in [(options.llm_base_url.strip() if provider == selected_provider else "")]
         ]
         missing_attempts = [
             {"model": model, "provider": provider, "missing_env": _llm_api_key_env(provider)}
             for model, provider in model_attempts
-            if not (os.getenv(_llm_api_key_env(provider)) or "").strip()
+            if not _llm_api_key_value(provider, options.llm_api_key if provider == selected_provider else "")
         ]
         if not available_attempts:
             missing_envs = ", ".join(dict.fromkeys(item["missing_env"] for item in missing_attempts))
@@ -652,8 +666,8 @@ class PDFConversionService:
                     {
                         "mode": options.llm_mode,
                         "model": requested_model,
-                        "provider": _llm_provider_for_model(requested_model),
-                        "reasoning_enabled": _llm_provider_for_model(requested_model) == "openrouter" and options.llm_reasoning,
+                        "provider": selected_provider,
+                        "reasoning_enabled": selected_provider == "openrouter" and options.llm_reasoning,
                         "skipped": True,
                         "reason": f"missing {missing_envs}",
                         "missing_attempts": missing_attempts,
@@ -675,14 +689,16 @@ class PDFConversionService:
 
         for chunk in chunks:
             messages = _build_llm_messages(chunk, mode=options.llm_mode)
-            for attempt_index, (model, provider, api_key) in enumerate(available_attempts):
+            for attempt_index, (model, provider, api_key, base_url) in enumerate(available_attempts):
                 try:
-                    response = self._call_llm_chat_completion(
-                        messages,
-                        model=model,
-                        api_key=api_key,
-                        reasoning=options.llm_reasoning,
-                    )
+                    call_kwargs: dict[str, Any] = {
+                        "model": model,
+                        "api_key": api_key,
+                        "reasoning": options.llm_reasoning,
+                    }
+                    if base_url:
+                        call_kwargs["base_url"] = base_url
+                    response = self._call_llm_chat_completion(messages, **call_kwargs)
                     if response.get("reasoning_details") is not None:
                         reasoning_details.append({"chunk_index": chunk["chunk_index"], "model": model, "reasoning_details": response["reasoning_details"]})
                     parsed = _parse_llm_json_response(response["content"])
@@ -695,7 +711,7 @@ class PDFConversionService:
                     error = {"chunk_index": chunk["chunk_index"], "model": model, "provider": provider, "error": str(exc)}
                     errors.append(error)
                     if attempt_index + 1 < len(available_attempts):
-                        next_model, next_provider, _ = available_attempts[attempt_index + 1]
+                        next_model, next_provider, _, _ = available_attempts[attempt_index + 1]
                         fallback_events.append({**error, "fallback_model": next_model, "fallback_provider": next_provider})
                     else:
                         warnings.append(f"LLM review loi chunk {chunk['chunk_index']} voi tat ca model; xem llm_errors.json.")
@@ -728,10 +744,11 @@ class PDFConversionService:
                 {
                     "mode": options.llm_mode,
                     "requested_model": requested_model,
-                    "attempted_models": [{"model": model, "provider": provider} for model, provider, _ in available_attempts],
+                    "requested_provider": selected_provider,
+                    "attempted_models": [{"model": model, "provider": provider} for model, provider, _, _ in available_attempts],
                     "missing_attempts": missing_attempts,
                     "used_models": used_models,
-                    "reasoning_enabled": _llm_provider_for_model(requested_model) == "openrouter" and options.llm_reasoning,
+                    "reasoning_enabled": selected_provider == "openrouter" and options.llm_reasoning,
                     "reasoning_chunks": len(reasoning_details),
                     "fallback_events": len(fallback_events),
                     "chunk_count": len(chunks),
@@ -756,12 +773,16 @@ class PDFConversionService:
         model: str,
         api_key: str,
         reasoning: bool = False,
+        base_url: str = "",
     ) -> dict[str, Any]:
         provider = _llm_provider_for_model(model)
-        provider_label = "OpenRouter" if provider == "openrouter" else "NVIDIA"
-        url = OPENROUTER_CHAT_COMPLETIONS_URL if provider == "openrouter" else NVIDIA_CHAT_COMPLETIONS_URL
+        provider_label = _llm_provider_label(provider)
+        url = _llm_chat_completions_url(provider, base_url)
+        provider_model = _llm_model_for_provider(model, provider)
+        if not provider_model:
+            raise RuntimeError(f"Chua chon model {provider_label}.")
         payload_data: dict[str, Any] = {
-            "model": _llm_model_for_provider(model, provider),
+            "model": provider_model,
             "messages": messages,
             "max_tokens": 2048,
             "temperature": 0.0,
@@ -796,7 +817,7 @@ class PDFConversionService:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
             raise RuntimeError(f"{provider_label} LLM HTTP {exc.code}: {detail}") from exc
         message = ((data.get("choices") or [{}])[0].get("message") or {})
-        content = (message.get("content") or "").strip()
+        content = _llm_message_content(message).strip()
         if not content:
             raise RuntimeError(f"{provider_label} LLM tra ve noi dung rong.")
         return {"content": content, "reasoning_details": message.get("reasoning_details")}
@@ -2504,8 +2525,58 @@ def _llm_model_attempts(model: str) -> list[tuple[str, str]]:
     return attempts
 
 
+def _llm_model_attempts_for_options(options: ConversionOptions) -> list[tuple[str, str]]:
+    provider = _llm_provider_for_options(options)
+    requested = options.llm_model.strip() or _llm_default_model_for_provider(provider)
+    if provider == "router9":
+        model = _llm_model_with_provider_prefix(requested, "router9")
+        return [(model, "router9")] if options.router9_only else [(model, "router9"), *_llm_fallback_attempts(exclude={"router9"})]
+    if provider == "openrouter":
+        return [(_llm_model_with_provider_prefix(requested, "openrouter"), "openrouter"), (DEFAULT_NVIDIA_LLM_MODEL, "nvidia")]
+    if provider == "nvidia":
+        return [(requested, "nvidia")]
+    return _llm_model_attempts(requested)
+
+
+def _llm_fallback_attempts(*, exclude: set[str] | None = None) -> list[tuple[str, str]]:
+    excluded = exclude or set()
+    attempts = [
+        ("openrouter/google/gemma-4-26b-a4b-it:free", "openrouter"),
+        (DEFAULT_NVIDIA_LLM_MODEL, "nvidia"),
+    ]
+    return [(model, provider) for model, provider in attempts if provider not in excluded]
+
+
+def _llm_default_model_for_provider(provider: str) -> str:
+    provider = _normal_llm_provider(provider)
+    if provider == "router9":
+        return (os.getenv("ROUTER9_TEXT_MODEL") or os.getenv("ROUTE9_TEXT_MODEL") or "").strip()
+    if provider == "openrouter":
+        return "openrouter/google/gemma-4-26b-a4b-it:free"
+    return DEFAULT_NVIDIA_LLM_MODEL
+
+
+def _normal_llm_provider(provider: str | None) -> str:
+    value = (provider or "auto").strip().lower()
+    if value in {"9route", "9router"}:
+        value = "router9"
+    return value if value in ALLOWED_LLM_PROVIDERS else "auto"
+
+
+def _llm_provider_for_options(options: ConversionOptions) -> str:
+    provider = _normal_llm_provider(options.llm_provider)
+    if provider != "auto":
+        return provider
+    return _llm_provider_for_model(options.llm_model)
+
+
 def _llm_provider_for_model(model: str) -> str:
-    return "openrouter" if model.strip().lower().startswith(OPENROUTER_MODEL_PREFIX) else "nvidia"
+    text = model.strip().lower()
+    if text.startswith(OPENROUTER_MODEL_PREFIX):
+        return "openrouter"
+    if text.startswith(ROUTER9_MODEL_PREFIX) or text.startswith(NINEROUTE_MODEL_PREFIX):
+        return "router9"
+    return "nvidia"
 
 
 def _llm_model_for_provider(model: str, provider: str | None = None) -> str:
@@ -2513,11 +2584,143 @@ def _llm_model_for_provider(model: str, provider: str | None = None) -> str:
     provider = provider or _llm_provider_for_model(text)
     if provider == "openrouter" and text.lower().startswith(OPENROUTER_MODEL_PREFIX):
         return text[len(OPENROUTER_MODEL_PREFIX) :]
+    if provider == "router9":
+        lower = text.lower()
+        if lower.startswith(ROUTER9_MODEL_PREFIX):
+            return text[len(ROUTER9_MODEL_PREFIX) :]
+        if lower.startswith(NINEROUTE_MODEL_PREFIX):
+            return text[len(NINEROUTE_MODEL_PREFIX) :]
     return text
 
 
+def _llm_model_with_provider_prefix(model: str, provider: str) -> str:
+    text = model.strip()
+    if provider == "openrouter":
+        if text.lower().startswith(OPENROUTER_MODEL_PREFIX):
+            return text
+        return f"{OPENROUTER_MODEL_PREFIX}{text}" if text else f"{OPENROUTER_MODEL_PREFIX}google/gemma-4-26b-a4b-it:free"
+    if provider == "router9":
+        if text.lower().startswith((ROUTER9_MODEL_PREFIX, NINEROUTE_MODEL_PREFIX)):
+            return text
+        return f"{ROUTER9_MODEL_PREFIX}{text}" if text else ROUTER9_MODEL_PREFIX
+    return text or DEFAULT_NVIDIA_LLM_MODEL
+
+
 def _llm_api_key_env(provider: str) -> str:
-    return "OPENROUTER_API_KEY" if provider == "openrouter" else "NVIDIA_API_KEY"
+    provider = _normal_llm_provider(provider)
+    if provider == "openrouter":
+        return "OPENROUTER_API_KEY"
+    if provider == "router9":
+        return "ROUTER9_API_KEY"
+    return "NVIDIA_API_KEY"
+
+
+def _llm_api_key_env_names(provider: str) -> list[str]:
+    provider = _normal_llm_provider(provider)
+    if provider == "router9":
+        return ["ROUTER9_API_KEY", "ROUTE9_API_KEY", "NINEROUTE_API_KEY", "9ROUTE_API_KEY"]
+    return [_llm_api_key_env(provider)]
+
+
+def _llm_api_key_value(provider: str, runtime_api_key: str = "") -> str:
+    if runtime_api_key.strip():
+        return runtime_api_key.strip()
+    for env_name in _llm_api_key_env_names(provider):
+        value = (os.getenv(env_name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _llm_base_url_value(provider: str, runtime_base_url: str = "") -> str:
+    if runtime_base_url.strip():
+        return runtime_base_url.strip()
+    provider = _normal_llm_provider(provider)
+    if provider == "router9":
+        return (os.getenv("ROUTER9_BASE_URL") or os.getenv("ROUTE9_BASE_URL") or os.getenv("9ROUTE_BASE_URL") or DEFAULT_ROUTER9_BASE_URL).strip()
+    if provider == "openrouter":
+        return (os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").strip()
+    if provider == "nvidia":
+        return (os.getenv("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1").strip()
+    return ""
+
+
+def _llm_chat_completions_url(provider: str, base_url: str = "") -> str:
+    provider = _normal_llm_provider(provider)
+    if provider == "openrouter" and not base_url.strip() and not os.getenv("OPENROUTER_BASE_URL"):
+        return OPENROUTER_CHAT_COMPLETIONS_URL
+    if provider == "nvidia" and not base_url.strip() and not os.getenv("NVIDIA_BASE_URL"):
+        return NVIDIA_CHAT_COMPLETIONS_URL
+    return f"{_llm_base_url_value(provider, base_url).rstrip('/')}/chat/completions"
+
+
+def _llm_provider_label(provider: str) -> str:
+    return {
+        "openrouter": "OpenRouter",
+        "router9": "9route",
+        "nvidia": "NVIDIA",
+    }.get(_normal_llm_provider(provider), provider)
+
+
+def _llm_message_content(message: dict[str, Any]) -> str:
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    return str(content)
+
+
+def list_openai_compatible_models(provider: str, *, api_key: str = "", base_url: str = "") -> list[dict[str, Any]]:
+    provider = _normal_llm_provider(provider)
+    key = _llm_api_key_value(provider, api_key)
+    if not key:
+        raise RuntimeError(f"Chua cau hinh {_llm_api_key_env(provider)}.")
+    url = f"{_llm_base_url_value(provider, base_url).rstrip('/')}/models"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"{_llm_provider_label(provider)} models HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{_llm_provider_label(provider)} models request loi: {exc.reason}") from exc
+    items = data.get("data") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        raise RuntimeError(f"{_llm_provider_label(provider)} response khong dung dinh dang data[].")
+    models: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        model_id = item["id"]
+        models.append(
+            {
+                "id": model_id,
+                "label": model_id,
+                "owned_by": item.get("owned_by") if isinstance(item.get("owned_by"), str) else "",
+                "created": item.get("created") if isinstance(item.get("created"), int) else None,
+                "context_length": _model_context_length(item),
+            }
+        )
+    return sorted(models, key=lambda item: item["id"].lower())
+
+
+def _model_context_length(item: dict[str, Any]) -> int | None:
+    for key in ("context_length", "context_window", "max_context_length"):
+        value = item.get(key)
+        if isinstance(value, int):
+            return value
+    return None
 
 
 def _normalize_latex(latex: str) -> str:
