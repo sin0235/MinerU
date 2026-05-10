@@ -9,7 +9,7 @@ from pathlib import Path
 
 from docx import Document
 
-from webapp.app import app, _docx_preview_html, _write_job_artifacts_zip
+from webapp.app import app, _conversion_options_from_request, _docx_preview_html, _write_job_artifacts_zip
 from webapp.pdf_service import (
     Artifact,
     ConversionJobManager,
@@ -714,6 +714,20 @@ def test_pdf_to_word_uses_llm_model_select() -> None:
     assert "openrouter/google/gemma-4-26b-a4b-it:free" in html
     assert "9route only" in html
     assert 'list="llmModelOptions"' not in html
+
+
+def test_router9_request_defaults_to_router9_text_model(monkeypatch) -> None:
+    monkeypatch.setenv("ROUTER9_TEXT_MODEL", "openAI-ds/deepseek-v4-vision")
+    monkeypatch.setenv("ROUTER9_API_KEY", "router-secret")
+    with app.test_request_context(
+        "/api/convert",
+        method="POST",
+        data={"llm_mode": "review", "llm_provider": "router9", "llm_model": ""},
+    ):
+        options = _conversion_options_from_request()
+
+    assert options.llm_provider == "router9"
+    assert options.llm_model == "openAI-ds/deepseek-v4-vision"
 
 
 def test_compact_http_error_detail_summarizes_heroku_application_error() -> None:

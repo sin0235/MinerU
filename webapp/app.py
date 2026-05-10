@@ -166,7 +166,7 @@ def _conversion_options_from_request() -> ConversionOptions:
     latex_delimiters_type = _choice("latex_delimiters_type", ALLOWED_LATEX_DELIMITER_TYPES, "b")
     llm_mode = _choice("llm_mode", ALLOWED_LLM_MODES, "off")
     llm_provider = _choice("llm_provider", ALLOWED_LLM_PROVIDERS, _default_llm_provider())
-    default_llm_model = _default_llm_model()
+    default_llm_model = _default_llm_model_for_provider(llm_provider)
     llm_model = (form.get("llm_model") or default_llm_model).strip() or default_llm_model
     llm_api_key = (form.get("llm_api_key") or "").strip()
     llm_base_url = (form.get("llm_base_url") or "").strip()
@@ -229,6 +229,15 @@ def _effective_llm_provider(model: str, provider: str = "auto") -> str:
 
 def _default_llm_model() -> str:
     return (os.getenv("PDF_WORD_LLM_MODEL") or DEFAULT_NVIDIA_LLM_MODEL).strip() or DEFAULT_NVIDIA_LLM_MODEL
+
+
+def _default_llm_model_for_provider(provider: str) -> str:
+    value = _effective_llm_provider("", provider)
+    if value == "router9":
+        return (os.getenv("ROUTER9_TEXT_MODEL") or os.getenv("ROUTE9_TEXT_MODEL") or "").strip()
+    if value == "openrouter":
+        return "google/gemma-4-26b-a4b-it:free"
+    return _default_llm_model()
 
 
 def _default_llm_provider() -> str:
