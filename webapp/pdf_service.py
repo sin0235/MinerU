@@ -793,8 +793,8 @@ class PDFConversionService:
             payload_data["reasoning"] = {"enabled": True}
         payload = json.dumps(payload_data).encode("utf-8")
         headers = {
+            **_llm_http_headers(provider),
             "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
             "Content-Type": "application/json",
         }
         if provider == "openrouter":
@@ -2662,6 +2662,14 @@ def _llm_provider_label(provider: str) -> str:
     }.get(_normal_llm_provider(provider), provider)
 
 
+def _llm_http_headers(provider: str) -> dict[str, str]:
+    label = _llm_provider_label(provider)
+    return {
+        "Accept": "application/json",
+        "User-Agent": f"MinerU-PDF-to-Word/1.0 ({label}; OpenAI-compatible client)",
+    }
+
+
 def _llm_message_content(message: dict[str, Any]) -> str:
     content = message.get("content") or ""
     if isinstance(content, list):
@@ -2682,8 +2690,8 @@ def list_openai_compatible_models(provider: str, *, api_key: str = "", base_url:
     request = urllib.request.Request(
         url,
         headers={
+            **_llm_http_headers(provider),
             "Authorization": f"Bearer {key}",
-            "Accept": "application/json",
         },
         method="GET",
     )

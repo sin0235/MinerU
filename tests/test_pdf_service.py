@@ -24,6 +24,7 @@ from webapp.pdf_service import (
     _format_exam_blocks,
     _llm_api_key_env,
     _llm_base_url_value,
+    _llm_http_headers,
     _llm_model_for_provider,
     _llm_provider_for_model,
     list_openai_compatible_models,
@@ -685,6 +686,15 @@ def test_pdf_to_word_uses_llm_model_select() -> None:
     assert "openrouter/google/gemma-4-26b-a4b-it:free" in html
     assert "9route only" in html
     assert 'list="llmModelOptions"' not in html
+
+
+def test_llm_http_headers_include_browser_safe_user_agent() -> None:
+    headers = _llm_http_headers("router9")
+
+    assert headers["Accept"] == "application/json"
+    assert "User-Agent" in headers
+    assert "MinerU-PDF-to-Word" in headers["User-Agent"]
+    assert "9route" in headers["User-Agent"]
 
 
 def test_llm_provider_defaults_route_hides_api_keys(monkeypatch) -> None:
