@@ -29,6 +29,8 @@ from webapp.pdf_service import (
     _llm_model_for_provider,
     _llm_provider_for_model,
     list_openai_compatible_models,
+    _llm_fallback_attempts,
+    _llm_model_attempts_for_options,
     _mineru_cli_from_python,
     _split_math_segments,
 )
@@ -423,6 +425,31 @@ def test_openrouter_llm_model_mapping_and_request(monkeypatch, tmp_path: Path) -
     assert captured["payload"]["reasoning"] == {"enabled": True}
     assert captured["authorization"] == "Bearer test-key"
     assert captured["timeout"] == 120
+
+
+def test_router9_fallback_skips_unconfigured_openrouter_free_model(monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("ROUTER9_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("ROUTE9_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("NVIDIA_FALLBACK_MODEL", raising=False)
+
+    assert _llm_fallback_attempts(exclude={"router9"}) == [("google/gemma-3-27b-it", "nvidia")]
+    assert _llm_model_attempts_for_options(ConversionOptions(llm_provider="router9", llm_model="openAI-ds/deepseek-v4-vision")) == [
+        ("router9/openAI-ds/deepseek-v4-vision", "router9"),
+        ("google/gemma-3-27b-it", "nvidia"),
+    ]
+
+
+def test_configured_openrouter_fallback_model_is_used(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODEL", "anthropic/claude-sonnet-4.5")
+    monkeypatch.delenv("ROUTER9_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("ROUTE9_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("NVIDIA_FALLBACK_MODEL", raising=False)
+
+    assert _llm_fallback_attempts(exclude={"router9"}) == [
+        ("openrouter/anthropic/claude-sonnet-4.5", "openrouter"),
+        ("google/gemma-3-27b-it", "nvidia"),
+    ]
 
 
 def test_openrouter_llm_failure_falls_back_to_nvidia(monkeypatch, tmp_path: Path) -> None:

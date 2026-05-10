@@ -2540,10 +2540,16 @@ def _llm_model_attempts_for_options(options: ConversionOptions) -> list[tuple[st
 
 def _llm_fallback_attempts(*, exclude: set[str] | None = None) -> list[tuple[str, str]]:
     excluded = exclude or set()
-    attempts = [
-        ("openrouter/google/gemma-4-26b-a4b-it:free", "openrouter"),
-        (DEFAULT_NVIDIA_LLM_MODEL, "nvidia"),
-    ]
+    attempts: list[tuple[str, str]] = []
+    router9_fallback = (os.getenv("ROUTER9_FALLBACK_MODEL") or os.getenv("ROUTE9_FALLBACK_MODEL") or "").strip()
+    openrouter_fallback = (os.getenv("OPENROUTER_FALLBACK_MODEL") or "").strip()
+    nvidia_fallback = (os.getenv("NVIDIA_FALLBACK_MODEL") or DEFAULT_NVIDIA_LLM_MODEL).strip()
+    if router9_fallback:
+        attempts.append((_llm_model_with_provider_prefix(router9_fallback, "router9"), "router9"))
+    if openrouter_fallback:
+        attempts.append((_llm_model_with_provider_prefix(openrouter_fallback, "openrouter"), "openrouter"))
+    if nvidia_fallback:
+        attempts.append((nvidia_fallback, "nvidia"))
     return [(model, provider) for model, provider in attempts if provider not in excluded]
 
 
