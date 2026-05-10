@@ -24,6 +24,7 @@ from webapp.pdf_service import (
     _format_exam_blocks,
     _llm_api_key_env,
     _llm_base_url_value,
+    _compact_http_error_detail,
     _llm_http_headers,
     _llm_model_for_provider,
     _llm_provider_for_model,
@@ -686,6 +687,16 @@ def test_pdf_to_word_uses_llm_model_select() -> None:
     assert "openrouter/google/gemma-4-26b-a4b-it:free" in html
     assert "9route only" in html
     assert 'list="llmModelOptions"' not in html
+
+
+def test_compact_http_error_detail_summarizes_heroku_application_error() -> None:
+    detail = '<!DOCTYPE html><html><head><title>Application Error</title></head><body><iframe src="https://www.herokucdn.com/error-pages/application-error.html"></iframe></body></html>'
+
+    compact = _compact_http_error_detail(detail)
+
+    assert compact == "Upstream application error. 9route service dang loi hoac dang restart; thu lai sau."
+    assert "<!DOCTYPE" not in compact
+    assert "iframe" not in compact
 
 
 def test_llm_http_headers_include_browser_safe_user_agent() -> None:

@@ -814,7 +814,7 @@ class PDFConversionService:
             with urllib.request.urlopen(request, timeout=120) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1000]
+            detail = _compact_http_error_detail(exc.read().decode("utf-8", errors="replace"))
             raise RuntimeError(f"{provider_label} LLM HTTP {exc.code}: {detail}") from exc
         message = ((data.get("choices") or [{}])[0].get("message") or {})
         content = _llm_message_content(message).strip()
@@ -2670,6 +2670,16 @@ def _llm_http_headers(provider: str) -> dict[str, str]:
     }
 
 
+def _compact_http_error_detail(detail: str) -> str:
+    text = re.sub(r"<script[\s\S]*?</script>", " ", detail or "", flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if "Application Error" in text and "herokucdn.com/error-pages/application-error" in detail:
+        return "Upstream application error. 9route service dang loi hoac dang restart; thu lai sau."
+    return (text or detail.strip())[:1000]
+
+
 def _llm_message_content(message: dict[str, Any]) -> str:
     content = message.get("content") or ""
     if isinstance(content, list):
@@ -2699,7 +2709,7 @@ def list_openai_compatible_models(provider: str, *, api_key: str = "", base_url:
         with urllib.request.urlopen(request, timeout=60) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        detail = _compact_http_error_detail(exc.read().decode("utf-8", errors="replace"))
         raise RuntimeError(f"{_llm_provider_label(provider)} models HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"{_llm_provider_label(provider)} models request loi: {exc.reason}") from exc
