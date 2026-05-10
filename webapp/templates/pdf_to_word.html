@@ -132,27 +132,15 @@
           </label>
         </div>
 
-        <section class="provider-panel" id="providerPanel">
-          <div class="section-title compact">
-            <h2>Quản lý provider</h2>
-            <button class="ghost-btn compact" id="scanProviderModelsBtn" type="button">Quét model</button>
+        <section class="provider-panel compact-provider-panel">
+          <div class="section-title compact provider-title-row">
+            <div>
+              <h2>Provider đang dùng</h2>
+              <p>Quản lý API key, base URL và danh sách model trong Settings để mọi form dùng cùng cấu hình.</p>
+            </div>
+            <a class="ghost-btn compact" href="{{ url_for('settings') }}">Mở Settings</a>
           </div>
-          <div class="provider-grid">
-            <label>
-              <span>API key override</span>
-              <input id="llmApiKeyInput" name="llm_api_key" type="password" autocomplete="off" placeholder="Để trống để dùng env" />
-            </label>
-            <label>
-              <span>Base URL override</span>
-              <input id="llmBaseUrlInput" name="llm_base_url" type="url" placeholder="{{ converter_options.provider_defaults.router9.base_url }}" />
-            </label>
-            <label class="provider-wide">
-              <span>Custom model</span>
-              <input id="llmCustomModelInput" type="text" placeholder="Ví dụ: cc/claude-opus-4-6 hoặc router9/cc/..." />
-            </label>
-          </div>
-          <div class="provider-status" id="providerStatus"></div>
-          <div class="model-scan-list hidden" id="modelScanList"></div>
+          <div class="provider-status ready" id="providerStatus"></div>
         </section>
 
         <label class="server-url-field">
@@ -287,13 +275,8 @@
   const forceOcrInput = document.getElementById('forceOcrInput');
   const llmProviderInput = document.getElementById('llmProviderInput');
   const llmModelInput = document.getElementById('llmModelInput');
-  const llmApiKeyInput = document.getElementById('llmApiKeyInput');
-  const llmBaseUrlInput = document.getElementById('llmBaseUrlInput');
-  const llmCustomModelInput = document.getElementById('llmCustomModelInput');
   const router9OnlyInput = document.getElementById('router9OnlyInput');
-  const scanProviderModelsBtn = document.getElementById('scanProviderModelsBtn');
   const providerStatus = document.getElementById('providerStatus');
-  const modelScanList = document.getElementById('modelScanList');
   const dropZone = document.getElementById('dropZone');
   const selectedFile = document.getElementById('selectedFile');
   const convertBtn = document.getElementById('convertBtn');
@@ -372,7 +355,7 @@
   function effectiveProvider() {
     const provider = normalizeProvider(llmProviderInput.value);
     if (provider !== 'auto') return provider;
-    const model = llmCustomModelInput.value.trim() || llmModelInput.value;
+    const model = llmModelInput.value;
     if (model.startsWith('openrouter/')) return 'openrouter';
     if (model.startsWith('router9/') || model.startsWith('9route/')) return 'router9';
     return 'nvidia';
@@ -383,15 +366,34 @@
     return providerSettings[provider] || {};
   }
 
-  function updateProviderStatus(message, tone) {
+  function providerLabel(provider) {
+    return provider === 'router9' ? '9route' : provider === 'nvidia' ? 'NVIDIA' : provider === 'openrouter' ? 'OpenRouter' : 'Auto';
+  }
+
+  function providerSummary(provider) {
+    const defaults = PROVIDER_DEFAULTS[provider] || {};
+    const config = providerSettings[provider] || {};
+    const configured = defaults.api_key_configured || !!config.api_key;
+    const models = config.models || [];
+    return {
+      configured,
+      models,
+      base: config.base_url || defaults.base_url || '',
+      model: config.model || defaults.model || '',
+      scannedAt: config.scanned_at || '',
+    };
+  }
+
+  function updateProviderStatus() {
     const provider = normalizeProvider(llmProviderInput.value);
     const resolved = effectiveProvider();
     const defaults = PROVIDER_DEFAULTS[resolved] || {};
-    const configured = defaults.api_key_configured || !!llmApiKeyInput.value.trim();
-    const base = llmBaseUrlInput.value.trim() || defaults.base_url || '';
-    const prefix = configured ? 'API key sẵn sàng' : 'Chưa có API key';
-    providerStatus.className = 'provider-status ' + (tone || (configured ? 'ready' : 'blocked'));
-    providerStatus.textContent = message || `${prefix} cho ${provider === 'auto' ? resolved : provider}${base ? ' · ' + base : ''}`;
+    const config = currentProviderConfig(resolved);
+    const configured = defaults.api_key_configured || !!config.api_key;
+    const base = config.base_url || defaults.base_url || '';
+    const model = llmModelInput.value || providerModelValue(resolved, config.model || defaults.model || '');
+    providerStatus.className = 'provider-status ' + (configured ? 'ready' : 'blocked');
+    providerStatus.textContent = `${configured ? 'API key sẵn sàng' : 'Chưa có API key'} cho ${provider === 'auto' ? resolved : provider}${model ? ' · ' + model : ''}${base ? ' · ' + base : ''}`;
   }
 
   function renderModelOptions() {
@@ -436,35 +438,9 @@
     }
   }
 
-  function renderScannedModels() {
-    const provider = normalizeProvider(llmProviderInput.value);
-    const config = currentProviderConfig(provider);
-    const models = config.models || [];
-    if (provider !== 'router9' || !models.length) {
-      modelScanList.classList.add('hidden');
-      modelScanList.innerHTML = '';
-      return;
-    }
-    modelScanList.classList.remove('hidden');
-    modelScanList.innerHTML = models.slice(0, 80).map(function (model) {
-      const selected = providerModelValue('router9', model.id) === llmModelInput.value ? ' active' : '';
-      return '<button type="button" class="model-chip' + selected + '" data-model="' + escapeHtml(model.id) + '">' +
-        '<strong>' + escapeHtml(model.id) + '</strong>' +
-        (model.context_length ? '<span>' + Number(model.context_length).toLocaleString() + ' ctx</span>' : '') +
-      '</button>';
-    }).join('');
-  }
-
   function syncProviderUi() {
-    const provider = normalizeProvider(llmProviderInput.value);
-    const config = currentProviderConfig(provider);
-    const defaults = PROVIDER_DEFAULTS[provider === 'auto' ? effectiveProvider() : provider] || {};
-    llmApiKeyInput.value = config.api_key || '';
-    llmBaseUrlInput.value = config.base_url || '';
-    llmBaseUrlInput.placeholder = defaults.base_url || 'Backend default';
-    scanProviderModelsBtn.disabled = !['openrouter', 'router9', 'nvidia'].includes(provider) || provider === 'auto';
+    providerSettings = loadProviderSettings();
     renderModelOptions();
-    renderScannedModels();
     updateProviderStatus();
   }
 
@@ -473,49 +449,9 @@
     if (provider === 'auto') return;
     providerSettings[provider] = {
       ...(providerSettings[provider] || {}),
-      api_key: llmApiKeyInput.value.trim(),
-      base_url: llmBaseUrlInput.value.trim(),
-      model: llmCustomModelInput.value.trim() || llmModelInput.value.replace(/^(openrouter|router9|9route)\//, ''),
+      model: llmModelInput.value.replace(/^(openrouter|router9|9route)\//, ''),
     };
     saveProviderSettings();
-  }
-
-  async function scanProviderModels() {
-    const provider = normalizeProvider(llmProviderInput.value);
-    if (provider === 'auto') {
-      updateProviderStatus('Chọn provider cụ thể trước khi quét model.', 'blocked');
-      return;
-    }
-    scanProviderModelsBtn.disabled = true;
-    updateProviderStatus('Đang quét model từ provider...', 'loading');
-    try {
-      const data = await parseResponse(await fetch('/api/llm/providers/' + encodeURIComponent(provider) + '/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          api_key: llmApiKeyInput.value.trim(),
-          base_url: llmBaseUrlInput.value.trim(),
-        }),
-      }));
-      providerSettings[provider] = {
-        ...(providerSettings[provider] || {}),
-        api_key: llmApiKeyInput.value.trim(),
-        base_url: llmBaseUrlInput.value.trim(),
-        models: data.models || [],
-        scanned_at: new Date().toISOString(),
-      };
-      if ((data.models || []).length && !llmCustomModelInput.value.trim()) {
-        providerSettings[provider].model = data.models[0].id;
-      }
-      saveProviderSettings();
-      renderModelOptions();
-      renderScannedModels();
-      updateProviderStatus('Đã quét ' + (data.models || []).length + ' model.', 'ready');
-    } catch (error) {
-      updateProviderStatus(error.message || 'Không thể quét model provider.', 'blocked');
-    } finally {
-      scanProviderModelsBtn.disabled = false;
-    }
   }
 
   function setBadge(status) {
@@ -835,31 +771,14 @@
     renderScannedModels();
     updateProviderStatus();
   });
-  llmApiKeyInput.addEventListener('change', function () {
-    persistCurrentProviderFields();
-    updateProviderStatus();
-  });
-  llmBaseUrlInput.addEventListener('change', function () {
-    persistCurrentProviderFields();
-    updateProviderStatus();
-  });
-  llmCustomModelInput.addEventListener('input', updateProviderStatus);
   router9OnlyInput.addEventListener('change', function () {
     if (router9OnlyInput.checked) {
       llmProviderInput.value = 'router9';
       syncProviderUi();
     }
   });
-  scanProviderModelsBtn.addEventListener('click', scanProviderModels);
-  modelScanList.addEventListener('click', function (event) {
-    const button = event.target.closest('.model-chip');
-    if (!button) return;
-    const provider = normalizeProvider(llmProviderInput.value);
-    const modelId = button.dataset.model || '';
-    llmModelInput.value = providerModelValue(provider, modelId);
-    llmCustomModelInput.value = '';
-    persistCurrentProviderFields();
-    renderScannedModels();
+  window.addEventListener('storage', function (event) {
+    if (event.key === 'pdfWordProviderSettings') syncProviderUi();
   });
   clearBtn.addEventListener('click', resetForm);
   clearTerminalBtn.addEventListener('click', function () {
@@ -915,9 +834,11 @@
     formData.set('server_url', document.getElementById('serverUrlInput').value.trim());
     formData.set('llm_mode', document.getElementById('llmModeInput').value);
     formData.set('llm_provider', llmProviderInput.value);
-    formData.set('llm_model', (llmCustomModelInput.value.trim() || llmModelInput.value.trim()));
-    formData.set('llm_api_key', llmApiKeyInput.value.trim());
-    formData.set('llm_base_url', llmBaseUrlInput.value.trim());
+    const resolvedProvider = normalizeProvider(llmProviderInput.value) === 'auto' ? effectiveProvider() : normalizeProvider(llmProviderInput.value);
+    const resolvedConfig = currentProviderConfig(resolvedProvider);
+    formData.set('llm_model', llmModelInput.value.trim());
+    formData.set('llm_api_key', resolvedConfig.api_key || '');
+    formData.set('llm_base_url', resolvedConfig.base_url || '');
     formData.set('llm_reasoning', document.getElementById('llmReasoningInput').checked ? 'true' : 'false');
     formData.set('router9_only', router9OnlyInput.checked ? 'true' : 'false');
     persistCurrentProviderFields();

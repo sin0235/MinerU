@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="workspace settings-page">
+  <div class="workspace-head">
+    <div>
+      <p class="eyebrow">Settings</p>
+      <h1>Quản lý model & provider</h1>
+    </div>
+    <a class="ghost-btn" href="{{ url_for('home') }}">Quay lại Convert</a>
+  </div>
+
+  <section class="panel provider-settings-panel">
+    <div class="section-title provider-title-row">
+      <div>
+        <h2>Provider đồng bộ</h2>
+        <p>Cấu hình ở đây được lưu trong trình duyệt và dùng lại ở trang Convert. API key override chỉ nằm trên máy này.</p>
+      </div>
+      <button class="ghost-btn compact" id="forgetProviderSettingsBtn" type="button">Xoá cấu hình local</button>
+    </div>
+
+    <div class="provider-cards" id="providerCards"></div>
+
+    <div class="provider-settings-grid">
+      <aside class="provider-list" id="providerList"></aside>
+
+      <section class="provider-editor">
+        <div class="provider-editor-head">
+          <div>
+            <span class="eyebrow" id="activeProviderEyebrow">Provider</span>
+            <h2 id="activeProviderTitle">NVIDIA</h2>
+          </div>
+          <button class="primary-btn compact-primary" id="scanProviderModelsBtn" type="button">Quét model</button>
+        </div>
+
+        <div class="provider-grid settings-provider-grid">
+          <label>
+            <span>API key override</span>
+            <input id="providerApiKeyInput" type="password" autocomplete="off" placeholder="Để trống để dùng env backend" />
+          </label>
+          <label>
+            <span>Base URL override</span>
+            <input id="providerBaseUrlInput" type="url" placeholder="Backend default" />
+          </label>
+          <label class="provider-wide">
+            <span>Model mặc định</span>
+            <input id="providerModelInput" type="text" placeholder="Tên model mặc định cho provider" />
+          </label>
+        </div>
+
+        <div class="provider-status" id="providerStatus"></div>
+
+        <div class="model-toolbar hidden" id="modelToolbar">
+          <strong id="modelScanTitle">Model đã quét</strong>
+          <span id="modelScanMeta"></span>
+        </div>
+        <div class="model-scan-list hidden" id="modelScanList"></div>
+      </section>
+    </div>
+  </section>
+</section>
+
+<script>
+(function () {
+  const PROVIDER_DEFAULTS = {{ converter_options.provider_defaults|tojson }};
+  const providerKeys = ['nvidia', 'openrouter', 'router9'];
+  const providerCards = document.getElementById('providerCards');
+  const providerList = document.getElementById('providerList');
+  const activeProviderTitle = document.getElementById('activeProviderTitle');
+  const activeProviderEyebrow = document.getElementById('activeProviderEyebrow');
+  const providerApiKeyInput = document.getElementById('providerApiKeyInput');
+  const providerBaseUrlInput = document.getElementById('providerBaseUrlInput');
+  const providerModelInput = document.getElementById('providerModelInput');
+  const providerStatus = document.getElementById('providerStatus');
+  const scanProviderModelsBtn = document.getElementById('scanProviderModelsBtn');
+  const forgetProviderSettingsBtn = document.getElementById('forgetProviderSettingsBtn');
+  const modelToolbar = document.getElementById('modelToolbar');
+  const modelScanTitle = document.getElementById('modelScanTitle');
+  const modelScanMeta = document.getElementById('modelScanMeta');
+  const modelScanList = document.getElementById('modelScanList');
+
+  let activeProvider = 'nvidia';
+  let providerSettings = loadProviderSettings();
+
+  function escapeHtml(value) {
+    const span = document.createElement('span');
+    span.textContent = String(value || '');
+    return span.innerHTML;
+  }
+
+  function providerLabel(provider) {
+    return provider === 'router9' ? '9route' : provider === 'nvidia' ? 'NVIDIA' : provider === 'openrouter' ? 'OpenRouter' : provider;
+  }
+
+  function loadProviderSettings() {
+    try {
+      return JSON.parse(localStorage.getItem('pdfWordProviderSettings') || '{}') || {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function saveProviderSettings() {
+    localStorage.setItem('pdfWordProviderSettings', JSON.stringify(providerSettings));
+  }
+
+  function currentConfig(provider) {
+    return providerSettings[provider] || {};
+  }
+
+  function summary(provider) {
+    const defaults = PROVIDER_DEFAULTS[provider] || {};
+    const config = currentConfig(provider);
+    const models = config.models || [];
+    return {
+      configured: defaults.api_key_configured || !!config.api_key,
+      model: config.model || defaults.model || '',
+      base: config.base_url || defaults.base_url || '',
+      models,
+      scannedAt: config.scanned_at || '',
+    };
+  }
+
+  function renderCards() {
+    providerCards.innerHTML = providerKeys.map(function (provider) {
+      const item = summary(provider);
+      return '<button type="button" class="provider-card ' + (activeProvider === provider ? 'active ' : '') + (item.configured ? 'ready' : 'blocked') + '" data-provider="' + provider + '">' +
+        '<strong>' + providerLabel(provider) + '</strong>' +
+        '<span>' + (item.configured ? 'API key sẵn sàng' : 'Thiếu API key') + '</span>' +
+        '<small>' + (item.models.length ? item.models.length + ' model đã quét' : (item.model || 'Backend default')) + '</small>' +
+      '</button>';
+    }).join('');
+  }
+
+  function renderList() {
+    providerList.innerHTML = providerKeys.map(function (provider) {
+      const item = summary(provider);
+      return '<button type="button" class="provider-list-item ' + (activeProvider === provider ? 'active' : '') + '" data-provider="' + provider + '">' +
+        '<strong>' + providerLabel(provider) + '</strong>' +
+        '<span>' + (item.base || 'Backend default') + '</span>' +
+      '</button>';
+    }).join('');
+  }
+
+  function renderEditor() {
+    const defaults = PROVIDER_DEFAULTS[activeProvider] || {};
+    const config = currentConfig(activeProvider);
+    activeProviderTitle.textContent = providerLabel(activeProvider);
+    activeProviderEyebrow.textContent = activeProvider;
+    providerApiKeyInput.value = config.api_key || '';
+    providerBaseUrlInput.value = config.base_url || '';
+    providerBaseUrlInput.placeholder = defaults.base_url || 'Backend default';
+    providerModelInput.value = config.model || defaults.model || '';
+    renderStatus();
+    renderModels();
+  }
+
+  function renderStatus(message, tone) {
+    const item = summary(activeProvider);
+    providerStatus.className = 'provider-status ' + (tone || (item.configured ? 'ready' : 'blocked'));
+    providerStatus.textContent = message || `${item.configured ? 'API key sẵn sàng' : 'Chưa có API key'} cho ${providerLabel(activeProvider)}${item.model ? ' · ' + item.model : ''}${item.base ? ' · ' + item.base : ''}`;
+    renderCards();
+    renderList();
+  }
+
+  function persistEditor() {
+    providerSettings[activeProvider] = {
+      ...(providerSettings[activeProvider] || {}),
+      api_key: providerApiKeyInput.value.trim(),
+      base_url: providerBaseUrlInput.value.trim(),
+      model: providerModelInput.value.trim(),
+    };
+    saveProviderSettings();
+    renderStatus();
+  }
+
+  function renderModels() {
+    const config = currentConfig(activeProvider);
+    const models = config.models || [];
+    if (!models.length) {
+      modelToolbar.classList.add('hidden');
+      modelScanList.classList.add('hidden');
+      modelScanList.innerHTML = '';
+      return;
+    }
+    modelToolbar.classList.remove('hidden');
+    modelScanList.classList.remove('hidden');
+    modelScanTitle.textContent = providerLabel(activeProvider) + ' · model đã quét';
+    modelScanMeta.textContent = (config.scanned_at ? new Date(config.scanned_at).toLocaleString() + ' · ' : '') + models.length + ' model';
+    modelScanList.innerHTML = models.slice(0, 160).map(function (model) {
+      const selected = model.id === providerModelInput.value ? ' active' : '';
+      return '<button type="button" class="model-chip' + selected + '" data-model="' + escapeHtml(model.id) + '">' +
+        '<strong>' + escapeHtml(model.id) + '</strong>' +
+        (model.context_length ? '<span>' + Number(model.context_length).toLocaleString() + ' ctx</span>' : '<span>select</span>') +
+      '</button>';
+    }).join('');
+  }
+
+  async function parseResponse(response) {
+    const data = await response.json().catch(function () { return {}; });
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    return data;
+  }
+
+  async function scanModels() {
+    persistEditor();
+    scanProviderModelsBtn.disabled = true;
+    renderStatus('Đang quét model từ ' + providerLabel(activeProvider) + '...', 'loading');
+    try {
+      const data = await parseResponse(await fetch('/api/llm/providers/' + encodeURIComponent(activeProvider) + '/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: providerApiKeyInput.value.trim(),
+          base_url: providerBaseUrlInput.value.trim(),
+        }),
+      }));
+      providerSettings[activeProvider] = {
+        ...(providerSettings[activeProvider] || {}),
+        api_key: providerApiKeyInput.value.trim(),
+        base_url: providerBaseUrlInput.value.trim(),
+        model: providerModelInput.value.trim() || (data.models || [])[0]?.id || '',
+        models: data.models || [],
+        scanned_at: new Date().toISOString(),
+      };
+      saveProviderSettings();
+      renderEditor();
+      renderStatus('Đã quét ' + (data.models || []).length + ' model.', 'ready');
+    } catch (error) {
+      renderStatus(error.message || 'Không thể quét model provider.', 'blocked');
+    } finally {
+      scanProviderModelsBtn.disabled = false;
+    }
+  }
+
+  function selectProvider(provider) {
+    persistEditor();
+    activeProvider = provider;
+    renderCards();
+    renderList();
+    renderEditor();
+  }
+
+  providerCards.addEventListener('click', function (event) {
+    const button = event.target.closest('[data-provider]');
+    if (button) selectProvider(button.dataset.provider);
+  });
+  providerList.addEventListener('click', function (event) {
+    const button = event.target.closest('[data-provider]');
+    if (button) selectProvider(button.dataset.provider);
+  });
+  providerApiKeyInput.addEventListener('change', persistEditor);
+  providerBaseUrlInput.addEventListener('change', persistEditor);
+  providerModelInput.addEventListener('change', persistEditor);
+  scanProviderModelsBtn.addEventListener('click', scanModels);
+  modelScanList.addEventListener('click', function (event) {
+    const button = event.target.closest('.model-chip');
+    if (!button) return;
+    providerModelInput.value = button.dataset.model || '';
+    persistEditor();
+    renderModels();
+  });
+  forgetProviderSettingsBtn.addEventListener('click', function () {
+    if (!window.confirm('Xoá toàn bộ cấu hình provider local?')) return;
+    providerSettings = {};
+    saveProviderSettings();
+    renderCards();
+    renderList();
+    renderEditor();
+  });
+
+  renderCards();
+  renderList();
+  renderEditor();
+})();
+</script>
+
+{% endblock %}

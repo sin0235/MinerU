@@ -292,6 +292,11 @@ def home():
     return render_template("pdf_to_word.html", **_base_context())
 
 
+@app.route("/settings")
+def settings():
+    return render_template("settings.html", **_base_context(active="settings"))
+
+
 @app.route("/api/status")
 def api_status():
     readiness = converter.readiness().to_payload()
