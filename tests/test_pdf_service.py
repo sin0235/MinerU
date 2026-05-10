@@ -730,6 +730,20 @@ def test_router9_request_defaults_to_router9_text_model(monkeypatch) -> None:
     assert options.llm_model == "openAI-ds/deepseek-v4-vision"
 
 
+def test_router9_request_replaces_stale_nvidia_default_model(monkeypatch) -> None:
+    monkeypatch.setenv("ROUTER9_TEXT_MODEL", "openAI-ds/deepseek-v4-vision")
+    monkeypatch.setenv("ROUTER9_API_KEY", "router-secret")
+    with app.test_request_context(
+        "/api/convert",
+        method="POST",
+        data={"llm_mode": "review", "llm_provider": "router9", "llm_model": "google/gemma-3-27b-it"},
+    ):
+        options = _conversion_options_from_request()
+
+    assert options.llm_provider == "router9"
+    assert options.llm_model == "openAI-ds/deepseek-v4-vision"
+
+
 def test_compact_http_error_detail_summarizes_heroku_application_error() -> None:
     detail = '<!DOCTYPE html><html><head><title>Application Error</title></head><body><iframe src="https://www.herokucdn.com/error-pages/application-error.html"></iframe></body></html>'
 

@@ -352,13 +352,16 @@
     return modelId;
   }
 
-  function effectiveProvider() {
-    const provider = normalizeProvider(llmProviderInput.value);
-    if (provider !== 'auto') return provider;
-    const model = llmModelInput.value;
+  function providerForModel(model) {
     if (model.startsWith('openrouter/')) return 'openrouter';
     if (model.startsWith('router9/') || model.startsWith('9route/')) return 'router9';
     return 'nvidia';
+  }
+
+  function effectiveProvider() {
+    const provider = normalizeProvider(llmProviderInput.value);
+    if (provider !== 'auto') return provider;
+    return providerForModel(llmModelInput.value);
   }
 
   function currentProviderConfig(provider) {
@@ -426,15 +429,15 @@
       option.textContent = label;
       llmModelInput.appendChild(option);
     });
-    if (optionMap.has(selectedBefore)) {
+    const config = currentProviderConfig(provider);
+    const defaults = PROVIDER_DEFAULTS[provider] || {};
+    const preferred = providerModelValue(provider, config.model || defaults.model || '');
+    if (provider !== 'auto' && selectedBefore && providerForModel(selectedBefore) !== provider && preferred && optionMap.has(preferred)) {
+      llmModelInput.value = preferred;
+    } else if (optionMap.has(selectedBefore)) {
       llmModelInput.value = selectedBefore;
-    } else {
-      const config = currentProviderConfig(provider);
-      const defaults = PROVIDER_DEFAULTS[provider] || {};
-      const preferred = providerModelValue(provider, config.model || defaults.model || '');
-      if (preferred && optionMap.has(preferred)) {
-        llmModelInput.value = preferred;
-      }
+    } else if (preferred && optionMap.has(preferred)) {
+      llmModelInput.value = preferred;
     }
   }
 

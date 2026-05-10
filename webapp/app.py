@@ -168,6 +168,8 @@ def _conversion_options_from_request() -> ConversionOptions:
     llm_provider = _choice("llm_provider", ALLOWED_LLM_PROVIDERS, _default_llm_provider())
     default_llm_model = _default_llm_model_for_provider(llm_provider)
     llm_model = (form.get("llm_model") or default_llm_model).strip() or default_llm_model
+    if llm_provider == "router9" and llm_model == _default_llm_model() and default_llm_model:
+        llm_model = default_llm_model
     llm_api_key = (form.get("llm_api_key") or "").strip()
     llm_base_url = (form.get("llm_base_url") or "").strip()
     router9_only = _form_bool("router9_only", default=False)
