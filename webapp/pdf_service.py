@@ -643,20 +643,32 @@ class PDFConversionService:
         requested_model = options.llm_model or DEFAULT_NVIDIA_LLM_MODEL
         model_attempts = _llm_model_attempts_for_options(options)
         selected_provider = _llm_provider_for_options(options)
-        available_attempts = [
-            (model, provider, api_key, base_url)
-            for model, provider in model_attempts
-            if (api_key := _llm_api_key_value(provider, options.llm_api_key if provider == selected_provider else ""))
-            for base_url in [(options.llm_base_url.strip() if provider == selected_provider else "")]
-        ]
-        missing_attempts = [
-            {"model": model, "provider": provider, "missing_env": _llm_api_key_env(provider)}
-            for model, provider in model_attempts
-            if not _llm_api_key_value(provider, options.llm_api_key if provider == selected_provider else "")
-        ]
+        available_attempts: list[tuple[str, str, str, str]] = []
+        missing_attempts: list[dict[str, str]] = []
+        for model, provider in model_attempts:
+            runtime_api_key = options.llm_api_key if provider == selected_provider else ""
+            api_key = _llm_api_key_value(provider, runtime_api_key)
+            if api_key:
+                base_url = options.llm_base_url.strip() if provider == selected_provider else ""
+                available_attempts.append((model, provider, api_key, base_url))
+            else:
+                missing_attempts.append(
+                    {
+                        "model": model,
+                        "provider": provider,
+                        "missing_env": _llm_api_key_env(provider),
+                        "role": "primary" if provider == selected_provider else "fallback",
+                    }
+                )
         if not available_attempts:
             missing_envs = ", ".join(dict.fromkeys(item["missing_env"] for item in missing_attempts))
             warnings.append(f"LLM review bi bo qua vi chua cau hinh {missing_envs}.")
+        elif missing_attempts:
+            missing_fallbacks = [item for item in missing_attempts if item["role"] == "fallback"]
+            if missing_fallbacks:
+                missing_envs = ", ".join(dict.fromkeys(item["missing_env"] for item in missing_fallbacks))
+                warnings.append(f"Mot so fallback LLM bi bo qua vi chua cau hinh {missing_envs}.")
+        if not available_attempts:
             (review_dir / "review_report.md").write_text(
                 f"# LLM Review\n\n- Status: skipped\n- Reason: missing {missing_envs}\n",
                 encoding="utf-8",
@@ -816,6 +828,13 @@ class PDFConversionService:
         except urllib.error.HTTPError as exc:
             detail = _compact_http_error_detail(exc.read().decode("utf-8", errors="replace"))
             raise RuntimeError(f"{provider_label} LLM HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            raise RuntimeError(f"{provider_label} LLM ket noi that bai: {reason}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(f"{provider_label} LLM het thoi gian cho ket noi.") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{provider_label} LLM tra ve JSON khong hop le: {exc}") from exc
         message = ((data.get("choices") or [{}])[0].get("message") or {})
         content = _llm_message_content(message).strip()
         if not content:

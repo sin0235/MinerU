@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import time
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -452,6 +453,31 @@ def test_configured_openrouter_fallback_model_is_used(monkeypatch) -> None:
     ]
 
 
+def test_openrouter_missing_fallback_key_is_reported(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    service = PDFConversionService(tmp_path)
+    review_dir = tmp_path / "review"
+
+    def fake_call(messages, **kwargs):
+        return {"content": '{"findings":[],"patches":[]}', "reasoning_details": None}
+
+    monkeypatch.setattr(service, "_call_llm_chat_completion", fake_call)
+
+    _, warnings = service._run_llm_review_layer(
+        [NormalizedBlock(kind="paragraph", text="abc", page_idx=0)],
+        review_dir,
+        ConversionOptions(llm_mode="review", llm_model="openrouter/google/gemma-4-26b-a4b-it:free"),
+    )
+
+    assert any("fallback LLM bi bo qua" in warning for warning in warnings)
+    summary = json.loads((review_dir / "review_request_summary.json").read_text(encoding="utf-8"))
+    assert summary["missing_attempts"] == [
+        {"model": "google/gemma-3-27b-it", "provider": "nvidia", "missing_env": "NVIDIA_API_KEY", "role": "fallback"}
+    ]
+
+
+
 def test_openrouter_llm_failure_falls_back_to_nvidia(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
     monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
@@ -529,6 +555,26 @@ def test_router9_llm_mapping_and_request(monkeypatch, tmp_path: Path) -> None:
     assert captured["url"] == f"{DEFAULT_ROUTER9_BASE_URL}/chat/completions"
     assert captured["payload"]["model"] == "cc/claude-opus-4-6"
     assert captured["authorization"] == "Bearer router-key"
+
+
+def test_llm_chat_completion_wraps_connection_errors(monkeypatch, tmp_path: Path) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr("webapp.pdf_service.urllib.request.urlopen", fake_urlopen)
+
+    service = PDFConversionService(tmp_path)
+    try:
+        service._call_llm_chat_completion(
+            [{"role": "user", "content": "ping"}],
+            model="router9/cc/claude-opus-4-6",
+            api_key="router-key",
+        )
+    except RuntimeError as exc:
+        assert "9route LLM ket noi that bai" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
 
 
 def test_router9_model_scan_uses_openai_compatible_models_endpoint(monkeypatch) -> None:
