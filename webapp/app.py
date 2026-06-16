@@ -94,9 +94,9 @@ def _converter_options_payload() -> dict:
         "backends": [
             "auto",
             "pipeline",
-            "hybrid-transformers",
+            "hybrid-engine",
             "hybrid-auto-engine",
-            "vlm-transformers",
+            "vlm-engine",
             "vlm-auto-engine",
             "hybrid-http-client",
             "vlm-http-client",

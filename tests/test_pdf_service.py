@@ -43,11 +43,11 @@ from webapp.pdf_service import (
 )
 
 
-def test_transformers_backends_are_allowed() -> None:
+def test_engine_backends_are_allowed() -> None:
     from webapp.pdf_service import ALLOWED_BACKENDS
 
-    assert "hybrid-transformers" in ALLOWED_BACKENDS
-    assert "vlm-transformers" in ALLOWED_BACKENDS
+    assert "hybrid-engine" in ALLOWED_BACKENDS
+    assert "vlm-engine" in ALLOWED_BACKENDS
 
 
 def test_default_mineru_vl_model_uses_2605(monkeypatch, tmp_path: Path) -> None:
@@ -933,8 +933,8 @@ def test_converter_options_default_backend_keeps_auto(monkeypatch) -> None:
 
     assert payload["default"]["backend"] == "auto"
     assert payload["resolved_backend"] == "hybrid-auto-engine"
-    assert "hybrid-transformers" in payload["backends"]
-    assert "vlm-transformers" in payload["backends"]
+    assert "hybrid-engine" in payload["backends"]
+    assert "vlm-engine" in payload["backends"]
 
 
 def test_api_rejects_non_pdf_upload() -> None:
