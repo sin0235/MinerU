@@ -17,3 +17,4 @@ output_original_project/
 .codex_pytest_tmp/
 rendered_docx/
 .kilo/
+colab_pdf_to_word_cloudflare copy.ipynb
