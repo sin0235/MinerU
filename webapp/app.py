@@ -68,6 +68,20 @@ app.config["MAX_CONTENT_LENGTH"] = converter.max_upload_bytes
 job_manager = ConversionJobManager(converter)
 
 
+@app.after_request
+def add_cors_headers(response):
+    """Allow cross-origin requests so the frontend can call the API
+    through a Cloudflare tunnel or any other reverse-proxy URL."""
+    origin = request.headers.get("Origin", "*")
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Max-Age"] = "3600"
+    if request.method == "OPTIONS":
+        response.status_code = 204
+    return response
+
+
 def _base_context(active: str = "converter") -> dict:
     return {
         "active": active,
