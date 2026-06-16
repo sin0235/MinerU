@@ -91,7 +91,16 @@ def _converter_options_payload() -> dict:
     return {
         "default": ConversionOptions(backend=default_backend, llm_model=default_llm_model).to_payload(),
         "resolved_backend": converter.resolve_backend(default_backend),
-        "backends": ["auto", "pipeline", "hybrid-auto-engine", "vlm-auto-engine", "hybrid-http-client", "vlm-http-client"],
+        "backends": [
+            "auto",
+            "pipeline",
+            "hybrid-transformers",
+            "hybrid-auto-engine",
+            "vlm-transformers",
+            "vlm-auto-engine",
+            "hybrid-http-client",
+            "vlm-http-client",
+        ],
         "parse_methods": ["auto", "ocr", "txt"],
         "languages": [
             ("ch", "Chinese + English"),

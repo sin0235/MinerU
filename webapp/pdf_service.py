@@ -40,7 +40,9 @@ ALLOWED_BACKENDS = {
     "auto",
     "pipeline",
     "hybrid-auto-engine",
+    "hybrid-transformers",
     "vlm-auto-engine",
+    "vlm-transformers",
     "hybrid-http-client",
     "vlm-http-client",
 }
