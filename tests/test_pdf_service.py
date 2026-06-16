@@ -8,11 +8,14 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from docx import Document
 
 from webapp.app import app, _conversion_options_from_request, _docx_preview_html, _write_job_artifacts_zip
 from webapp.pdf_service import (
     Artifact,
+    ConversionError,
     ConversionJobManager,
     ConversionResult,
     ConversionSubmission,
@@ -21,7 +24,10 @@ from webapp.pdf_service import (
     NormalizedBlock,
     OPENROUTER_CHAT_COMPLETIONS_URL,
     PDFConversionService,
+    ReadinessInfo,
+    DEFAULT_MINERU_VL_MODEL_NAME,
     DEFAULT_ROUTER9_BASE_URL,
+    _is_mineru_auto_backend_fallback_error,
     _format_exam_blocks,
     _llm_api_key_env,
     _llm_base_url_value,
@@ -35,6 +41,21 @@ from webapp.pdf_service import (
     _mineru_cli_from_python,
     _split_math_segments,
 )
+
+
+def test_default_mineru_vl_model_uses_2605(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("MINERU_VL_MODEL_NAME", raising=False)
+    service = PDFConversionService(tmp_path)
+
+    assert DEFAULT_MINERU_VL_MODEL_NAME == "opendatalab/MinerU2.5-Pro-2605-1.2B"
+    assert service.vl_model_name == DEFAULT_MINERU_VL_MODEL_NAME
+
+
+def test_mineru_vl_model_env_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MINERU_VL_MODEL_NAME", "custom/model")
+    service = PDFConversionService(tmp_path)
+
+    assert service.vl_model_name == "custom/model"
 
 
 def test_content_list_v2_generates_editable_docx(tmp_path: Path) -> None:
@@ -700,6 +721,62 @@ def test_run_mineru_passes_cli_options_and_config(monkeypatch, tmp_path: Path) -
     assert Path(captured["env"]["MINERU_TOOLS_CONFIG_JSON"]).exists()
 
 
+def test_run_mineru_does_not_pass_api_url_to_local_backend(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    service.api_url = "https://mineru-api.example.com"
+    captured = {}
+
+    def fake_command() -> list[str]:
+        return ["mineru"]
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(service, "_mineru_command", fake_command)
+    monkeypatch.setattr("webapp.pdf_service.subprocess.run", fake_run)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    service._run_mineru(tmp_path / "input.pdf", output_dir, "hybrid-auto-engine", ConversionOptions(backend="hybrid-auto-engine"))
+
+    assert "--api-url" not in captured["command"]
+
+
+def test_run_mineru_passes_api_url_to_http_backend(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    service.api_url = "https://mineru-api.example.com"
+    captured = {}
+
+    def fake_command() -> list[str]:
+        return ["mineru"]
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(service, "_mineru_command", fake_command)
+    monkeypatch.setattr("webapp.pdf_service.subprocess.run", fake_run)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    service._run_mineru(tmp_path / "input.pdf", output_dir, "vlm-http-client", ConversionOptions(backend="vlm-http-client"))
+
+    assert ["--api-url", "https://mineru-api.example.com"] == captured["command"][-2:]
+
+
 def test_job_manager_reaches_completed_status(tmp_path: Path) -> None:
     class FakeService:
         def convert(self, submission: ConversionSubmission) -> ConversionResult:
@@ -737,6 +814,120 @@ def test_job_manager_reaches_completed_status(tmp_path: Path) -> None:
     assert snapshot["result"]["backend_used"] == "pipeline"
 
 
+def test_mineru_auto_backend_error_detection() -> None:
+    assert _is_mineru_auto_backend_fallback_error("ImportError: libcudart.so.13: cannot open shared object file")
+    assert _is_mineru_auto_backend_fallback_error("Please install vllm to use the vllm-async-engine backend.")
+    assert not _is_mineru_auto_backend_fallback_error("MinerU xu ly that bai: invalid page range")
+
+
+def test_auto_hybrid_cuda_error_falls_back_to_pipeline(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    input_path = tmp_path / "input.pdf"
+    input_path.write_bytes(b"%PDF-1.4")
+    calls: list[str] = []
+    progress_events: list[dict] = []
+
+    monkeypatch.setattr(
+        service,
+        "readiness",
+        lambda: ReadinessInfo(True, "ok", ["mineru"], "hybrid-auto-engine"),
+    )
+    monkeypatch.setattr(service, "resolve_backend", lambda requested=None: "hybrid-auto-engine")
+    monkeypatch.setattr(
+        service,
+        "_load_normalized_blocks",
+        lambda output_dir: ([NormalizedBlock(kind="paragraph", text="ok")], output_dir / "out.json", "content_list", 1, []),
+    )
+
+    def fake_run_mineru(pdf_path, output_dir, backend, options, progress_callback=None):
+        calls.append(backend)
+        if backend == "hybrid-auto-engine":
+            raise ConversionError("MinerU xu ly that bai: ImportError: libcudart.so.13: Please install vllm")
+        (output_dir / "out.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(service, "_run_mineru", fake_run_mineru)
+
+    result = service.convert(
+        ConversionSubmission("job1", "input.pdf", input_path, input_path.stat().st_size, ConversionOptions(backend="auto")),
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["hybrid-auto-engine", "pipeline"]
+    assert result.backend_used == "pipeline"
+    assert any("fallback sang pipeline" in warning for warning in result.warnings)
+    assert any(event.get("stage") == "mineru_fallback" for event in progress_events)
+
+
+def test_explicit_hybrid_cuda_error_does_not_fallback(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    input_path = tmp_path / "input.pdf"
+    input_path.write_bytes(b"%PDF-1.4")
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "readiness",
+        lambda: ReadinessInfo(True, "ok", ["mineru"], "hybrid-auto-engine"),
+    )
+    monkeypatch.setattr(service, "resolve_backend", lambda requested=None: "hybrid-auto-engine")
+
+    def fake_run_mineru(pdf_path, output_dir, backend, options, progress_callback=None):
+        calls.append(backend)
+        raise ConversionError("MinerU xu ly that bai: ImportError: libcudart.so.13: Please install vllm")
+
+    monkeypatch.setattr(service, "_run_mineru", fake_run_mineru)
+
+    with pytest.raises(ConversionError):
+        service.convert(
+            ConversionSubmission(
+                "job1",
+                "input.pdf",
+                input_path,
+                input_path.stat().st_size,
+                ConversionOptions(backend="hybrid-auto-engine"),
+            )
+        )
+
+    assert calls == ["hybrid-auto-engine"]
+
+
+def test_auto_hybrid_unrelated_error_does_not_fallback(monkeypatch, tmp_path: Path) -> None:
+    service = PDFConversionService(tmp_path)
+    input_path = tmp_path / "input.pdf"
+    input_path.write_bytes(b"%PDF-1.4")
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "readiness",
+        lambda: ReadinessInfo(True, "ok", ["mineru"], "hybrid-auto-engine"),
+    )
+    monkeypatch.setattr(service, "resolve_backend", lambda requested=None: "hybrid-auto-engine")
+
+    def fake_run_mineru(pdf_path, output_dir, backend, options, progress_callback=None):
+        calls.append(backend)
+        raise ConversionError("MinerU xu ly that bai: invalid page range")
+
+    monkeypatch.setattr(service, "_run_mineru", fake_run_mineru)
+
+    with pytest.raises(ConversionError):
+        service.convert(ConversionSubmission("job1", "input.pdf", input_path, input_path.stat().st_size, ConversionOptions(backend="auto")))
+
+    assert calls == ["hybrid-auto-engine"]
+
+
+def test_converter_options_default_backend_keeps_auto(monkeypatch) -> None:
+    monkeypatch.setenv("PDF_WORD_BACKEND", "auto")
+    monkeypatch.setattr("webapp.app.converter.resolve_backend", lambda requested=None: "hybrid-auto-engine")
+
+    from webapp.app import _converter_options_payload
+
+    payload = _converter_options_payload()
+
+    assert payload["default"]["backend"] == "auto"
+    assert payload["resolved_backend"] == "hybrid-auto-engine"
+
+
 def test_api_rejects_non_pdf_upload() -> None:
     client = app.test_client()
     response = client.post(
@@ -759,6 +950,8 @@ def test_pdf_to_word_uses_llm_model_select() -> None:
     assert '<select id="llmModelInput" name="llm_model">' in html
     assert "openrouter/google/gemma-4-26b-a4b-it:free" in html
     assert "9route only" in html
+    assert "MinerU2.5-Pro-2605-1.2B" in html
+    assert "MinerU2.5-Pro-2604-1.2B" not in html
     assert 'list="llmModelOptions"' not in html
 
 
@@ -849,7 +1042,7 @@ def test_readiness_blocks_python_314_env(monkeypatch, tmp_path: Path) -> None:
     readiness = service.readiness()
 
     assert readiness.ready is False
-    assert "Python 3.14" in readiness.message
+    assert "Python 3.10-3.13" in readiness.message
 
 
 def test_mineru_cli_fallback_checks_path(monkeypatch, tmp_path: Path) -> None:

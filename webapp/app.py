@@ -85,8 +85,12 @@ def _is_api_request() -> bool:
 
 def _converter_options_payload() -> dict:
     default_llm_model = _default_llm_model()
+    default_backend = (os.getenv("PDF_WORD_BACKEND") or "auto").strip() or "auto"
+    if default_backend not in ALLOWED_BACKENDS:
+        default_backend = "auto"
     return {
-        "default": ConversionOptions(backend=converter.resolve_backend(), llm_model=default_llm_model).to_payload(),
+        "default": ConversionOptions(backend=default_backend, llm_model=default_llm_model).to_payload(),
+        "resolved_backend": converter.resolve_backend(default_backend),
         "backends": ["auto", "pipeline", "hybrid-auto-engine", "vlm-auto-engine", "hybrid-http-client", "vlm-http-client"],
         "parse_methods": ["auto", "ocr", "txt"],
         "languages": [

@@ -44,6 +44,8 @@ ALLOWED_BACKENDS = {
     "hybrid-http-client",
     "vlm-http-client",
 }
+HTTP_CLIENT_BACKENDS = {"hybrid-http-client", "vlm-http-client"}
+DEFAULT_MINERU_VL_MODEL_NAME = "opendatalab/MinerU2.5-Pro-2605-1.2B"
 ALLOWED_PARSE_METHODS = {"auto", "txt", "ocr"}
 ALLOWED_LANGUAGES = {
     "ch",
@@ -90,6 +92,19 @@ SKIPPED_CONTENT_TYPES = {
     "seal",
 }
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _is_mineru_auto_backend_fallback_error(text: str) -> bool:
+    normalized = text.lower()
+    if "please install vllm" in normalized:
+        return True
+    if "libcudart.so" in normalized or "libcuda.so" in normalized:
+        return True
+    if "cannot open shared object file" in normalized and ("cuda" in normalized or "vllm" in normalized):
+        return True
+    if ("importerror" in normalized or "modulenotfounderror" in normalized) and "vllm" in normalized:
+        return True
+    return False
 
 
 @dataclass(slots=True)
@@ -236,9 +251,7 @@ class PDFConversionService:
         self.max_upload_bytes = self.max_upload_mb * 1024 * 1024
         self.keep_artifacts = _env_flag("PDF_WORD_KEEP_ARTIFACTS", default=True)
         self.model_source = (os.getenv("MINERU_MODEL_SOURCE") or "huggingface").strip() or "huggingface"
-        self.vl_model_name = (
-            os.getenv("MINERU_VL_MODEL_NAME") or "opendatalab/MinerU2.5-Pro-2604-1.2B"
-        ).strip()
+        self.vl_model_name = (os.getenv("MINERU_VL_MODEL_NAME") or DEFAULT_MINERU_VL_MODEL_NAME).strip()
         self.api_url = (os.getenv("MINERU_API_URL") or "").strip()
         self.timeout_seconds = _env_int("MINERU_TIMEOUT_SECONDS", default=3600, minimum=60, maximum=24 * 3600)
 
@@ -298,7 +311,7 @@ class PDFConversionService:
             return ReadinessInfo(
                 ready=False,
                 message=(
-                    "MinerU khong ho tro Python 3.14 tren Windows. Hay cai Python 3.12, tao env rieng, "
+                    "MinerU ho tro Python 3.10-3.13. Hay tao env rieng trong khoang nay, "
                     "roi dat MINERU_PYTHON_EXE hoac MINERU_COMMAND tro toi env do."
                 ),
                 command=command,
@@ -321,7 +334,7 @@ class PDFConversionService:
             return ReadinessInfo(
                 ready=False,
                 message=(
-                    "Khong tim thay lenh MinerU. Cai Python 3.12 + mineru[all], sau do dat "
+                    "Khong tim thay lenh MinerU. Cai Python 3.10-3.13 + mineru[all], sau do dat "
                     "MINERU_PYTHON_EXE hoac MINERU_COMMAND."
                 ),
                 command=command,
@@ -386,14 +399,47 @@ class PDFConversionService:
         mineru_output_dir.mkdir(parents=True, exist_ok=True)
         docx_dir.mkdir(parents=True, exist_ok=True)
 
-        backend = self.resolve_backend(submission.options.backend)
+        requested_backend = (submission.options.backend or "auto").strip() or "auto"
+        backend = self.resolve_backend(requested_backend)
         self._report_progress(
             progress_callback,
             progress=8,
             stage="prepare",
             message="Dang chuan bi thu muc job va kiem tra MinerU.",
         )
-        self._run_mineru(submission.input_path, mineru_output_dir, backend, submission.options, progress_callback=progress_callback)
+        try:
+            self._run_mineru(submission.input_path, mineru_output_dir, backend, submission.options, progress_callback=progress_callback)
+        except ConversionError as exc:
+            if not (
+                requested_backend == "auto"
+                and backend == "hybrid-auto-engine"
+                and _is_mineru_auto_backend_fallback_error(str(exc))
+            ):
+                raise
+            fallback_warning = "Backend auto hybrid-auto-engine loi runtime CUDA/vLLM; da fallback sang pipeline."
+            self._report_progress(
+                progress_callback,
+                progress=12,
+                stage="mineru_fallback",
+                message=fallback_warning,
+                terminal=f"[fallback] {fallback_warning}",
+            )
+            shutil.rmtree(mineru_output_dir, ignore_errors=True)
+            mineru_output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self._run_mineru(
+                    submission.input_path,
+                    mineru_output_dir,
+                    "pipeline",
+                    submission.options,
+                    progress_callback=progress_callback,
+                )
+            except ConversionError as fallback_exc:
+                raise ConversionError(
+                    f"MinerU pipeline fallback cung that bai sau loi CUDA/vLLM cua hybrid-auto-engine: {fallback_exc}"
+                ) from fallback_exc
+            backend = "pipeline"
+            readiness.warnings.append(fallback_warning)
 
         self._report_progress(
             progress_callback,
@@ -497,7 +543,7 @@ class PDFConversionService:
             command.extend(["-e", str(options.end_page)])
         if options.server_url:
             command.extend(["-u", options.server_url])
-        if self.api_url:
+        if self.api_url and backend in HTTP_CLIENT_BACKENDS:
             command.extend(["--api-url", self.api_url])
 
         env = os.environ.copy()

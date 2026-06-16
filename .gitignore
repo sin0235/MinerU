@@ -16,3 +16,4 @@ output_original_project/
 .pytest_tmp_codex/
 .codex_pytest_tmp/
 rendered_docx/
+.kilo/
