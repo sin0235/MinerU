@@ -2858,19 +2858,19 @@ def _normalize_latex(latex: str) -> str:
         text = text.replace("\\end{cases}", "\\end{array} \\end{cases}")
 
     replacements = {
-        "\\leq": r"\\le",
-        "\\geq": r"\\ge",
-        "\\neq": r"\\ne",
-        "\\to": r"\\rightarrow",
-        "\\dfrac": r"\\frac",
-        "\\tfrac": r"\\frac",
-        "\\cfrac": r"\\frac",
-        "\\unit{": r"\\mathrm{",
-        "\\varnothing": r"\\emptyset",
-        "\\geqslant": r"\\ge",
-        "\\leqslant": r"\\le",
-        "\\widehat": r"\\hat",
-        "\\widetilde": r"\\tilde",
+        "\\leqslant": "\\le",
+        "\\geqslant": "\\ge",
+        "\\leq": "\\le",
+        "\\geq": "\\ge",
+        "\\neq": "\\ne",
+        "\\to": "\\rightarrow",
+        "\\dfrac": "\\frac",
+        "\\tfrac": "\\frac",
+        "\\cfrac": "\\frac",
+        "\\unit{": "\\mathrm{",
+        "\\varnothing": "\\emptyset",
+        "\\widehat": "\\hat",
+        "\\widetilde": "\\tilde",
     }
     for source, target in replacements.items():
         text = text.replace(source, target)
@@ -2880,8 +2880,26 @@ def _normalize_latex(latex: str) -> str:
 def _latex_as_text(latex: str, *, display: bool) -> str:
     text = re.sub(r"\^\s*\{\s*\\prime\s*\}", "′", latex)
     text = re.sub(r"\\prime\b", "′", text)
-    text = text.replace("\\infty", "∞").replace("\\pi", "π")
-    text = text.replace("\\square", "ℝ").replace("\\setminus", "\\")
+    symbol_replacements = {
+        "\\leqslant": "≤",
+        "\\geqslant": "≥",
+        "\\leq": "≤",
+        "\\geq": "≥",
+        "\\le": "≤",
+        "\\ge": "≥",
+        "\\neq": "≠",
+        "\\ne": "≠",
+        "\\emptyset": "∅",
+        "\\varnothing": "∅",
+        "\\lt": "<",
+        "\\gt": ">",
+        "\\infty": "∞",
+        "\\pi": "π",
+        "\\square": "ℝ",
+        "\\setminus": "\\",
+    }
+    for source, target in symbol_replacements.items():
+        text = text.replace(source, target)
     text = text.replace("\\{", "{").replace("\\}", "}")
     if display:
         return f"[{text}]"
@@ -2913,9 +2931,13 @@ def _split_implicit_latex_segments(text: str) -> list[tuple[bool, str]]:
     if not _looks_like_implicit_latex(text):
         return [(False, text)]
 
+    math_token = r"(?:\\[A-Za-z]+(?:\s*\{[^{}]*\})?|[A-Za-z0-9]+(?:\s*[_^]\s*(?:\{[^{}]+\}|[A-Za-z0-9+-]+))*)"
+    relation = rf"{math_token}\s*(?:<=|>=|!=|<|>|\\leqslant|\\geqslant|\\leq?|\\geq?|\\neq?|\\lt|\\gt)\s*{math_token}"
+    latex_piece = r"\\[A-Za-z]+(?:\s*[_^]\s*(?:\{[^{}]*\}|[A-Za-z0-9+-]+)|\s*\{[^{}]*\}|\s*\([^()]*\)|\s*\[[^\[\]]*\])*|(?:[A-Za-z0-9]+|[xyz])(?:[_^]\s*\{[^{}]+\}|[_^]\s*[A-Za-z0-9+-]+)+"
+    pattern = rf"{relation}|{latex_piece}"
     segments: list[tuple[bool, str]] = []
     cursor = 0
-    for match in re.finditer(r"\\[A-Za-z]+(?:\s*[_^]\s*(?:\{[^{}]*\}|[A-Za-z0-9+-]+)|\s*\{[^{}]*\}|\s*\([^()]*\)|\s*\[[^\[\]]*\])*|(?:[A-Za-z0-9]+|[xyz])(?:[_^]\s*\{[^{}]+\}|[_^]\s*[A-Za-z0-9+-]+)+", text):
+    for match in re.finditer(pattern, text):
         start, end = match.span()
         while start > cursor and text[start - 1] in "([{":
             start -= 1
@@ -2937,7 +2959,9 @@ def _split_implicit_latex_segments(text: str) -> list[tuple[bool, str]]:
 
 
 def _looks_like_implicit_latex(text: str) -> bool:
-    return bool(re.search(r"\\(frac|sqrt|vec|overrightarrow|left|right|int|log|ln|sin|cos|tan|pi|infty|square|setminus|leq?|geq?|neq|mathbb|mathrm)\b|[A-Za-z0-9][_\^]\s*(?:\{|[A-Za-z0-9+-])", text))
+    relation = r"[A-Za-z0-9]+(?:\s*[_^]\s*(?:\{[^{}]+\}|[A-Za-z0-9+-]+))*\s*(?:<=|>=|!=|<|>|\\leqslant|\\geqslant|\\leq?|\\geq?|\\neq?|\\lt|\\gt)\s*[A-Za-z0-9]+(?:\s*[_^]\s*(?:\{[^{}]+\}|[A-Za-z0-9+-]+))*"
+    latex = r"\\(frac|sqrt|vec|overrightarrow|left|right|int|log|ln|sin|cos|tan|pi|infty|square|setminus|leq?|geq?|neq|mathbb|mathrm|emptyset|varnothing)\b|[A-Za-z0-9][_\^]\s*(?:\{|[A-Za-z0-9+-])"
+    return bool(re.search(rf"{relation}|{latex}", text))
 
 
 def _find_next_math_start(text: str, start_at: int) -> tuple[int, str, str, bool] | None:

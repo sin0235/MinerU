@@ -39,6 +39,9 @@ from webapp.pdf_service import (
     _llm_fallback_attempts,
     _llm_model_attempts_for_options,
     _mineru_cli_from_python,
+    _latex_as_text,
+    _normalize_latex,
+    _split_implicit_latex_segments,
     _split_math_segments,
 )
 
@@ -411,6 +414,41 @@ def test_docx_preview_keeps_word_math_text(tmp_path: Path) -> None:
 
     assert "Inline a+b text." in html
     assert "Cell x=1" in html
+
+
+def test_latex_normalizes_relations_and_empty_set() -> None:
+    assert _normalize_latex(r"x \leq y") == r"x \le y"
+    assert _normalize_latex(r"x \geq y") == r"x \ge y"
+    assert _normalize_latex(r"x \neq y") == r"x \ne y"
+    assert _normalize_latex(r"x \leqslant y") == r"x \le y"
+    assert _normalize_latex(r"x \geqslant y") == r"x \ge y"
+    assert _normalize_latex(r"A=\varnothing") == r"A=\emptyset"
+
+
+def test_latex_text_fallback_renders_common_symbols() -> None:
+    assert _latex_as_text(r"x \le y", display=False) == "x ≤ y"
+    assert _latex_as_text(r"x \ge y", display=False) == "x ≥ y"
+    assert _latex_as_text(r"x \ne y", display=False) == "x ≠ y"
+    assert _latex_as_text(r"A=\emptyset", display=False) == "A=∅"
+    assert _latex_as_text(r"A=\varnothing", display=False) == "A=∅"
+
+
+def test_implicit_latex_keeps_relation_operands_together() -> None:
+    assert _split_implicit_latex_segments(r"Given x \le y.") == [
+        (False, "Given "),
+        (True, r"x \le y"),
+        (False, "."),
+    ]
+    assert _split_implicit_latex_segments("Given x >= y.") == [
+        (False, "Given "),
+        (True, "x >= y"),
+        (False, "."),
+    ]
+    assert _split_implicit_latex_segments(r"Given x_i \le y_i.") == [
+        (False, "Given "),
+        (True, r"x_i \le y_i"),
+        (False, "."),
+    ]
 
 
 def test_plain_dollar_text_is_not_treated_as_math() -> None:
