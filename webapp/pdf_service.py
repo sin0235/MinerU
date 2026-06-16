@@ -2132,19 +2132,42 @@ def _format_exam_blocks(blocks: list[NormalizedBlock]) -> list[NormalizedBlock]:
             option_buffer = []
 
     for block in blocks:
-        if block.kind == "paragraph" and _is_exam_option(block.text):
-            option_buffer.append(block)
-            if len(option_buffer) == 4:
+        candidates = _split_embedded_exam_options(block) if block.kind == "paragraph" else [block]
+        for candidate in candidates:
+            if candidate.kind == "paragraph" and _is_exam_option(candidate.text):
+                option_buffer.append(candidate)
+                if len(option_buffer) == 4:
+                    flush_options()
+                continue
+            if candidate.kind == "list" and candidate.items and all(_is_exam_option(item) for item in candidate.items):
                 flush_options()
-            continue
-        if block.kind == "list" and block.items and all(_is_exam_option(item) for item in block.items):
+                formatted.extend(_layout_exam_options([NormalizedBlock(kind="paragraph", text=item) for item in candidate.items]))
+                continue
             flush_options()
-            formatted.extend(_layout_exam_options([NormalizedBlock(kind="paragraph", text=item) for item in block.items]))
-            continue
-        flush_options()
-        formatted.append(block)
+            formatted.append(candidate)
     flush_options()
     return formatted
+
+
+def _split_embedded_exam_options(block: NormalizedBlock) -> list[NormalizedBlock]:
+    text = block.text.strip()
+    matches = list(re.finditer(r"(?<![A-Za-zÀ-ỹ0-9])([A-Da-d])([.,:)])\s*", text))
+    markers = [match.group(1).upper() for match in matches]
+    if markers != ["A", "B", "C", "D"]:
+        return [block]
+
+    pieces: list[NormalizedBlock] = []
+    if matches[0].start() > 0:
+        prefix = text[: matches[0].start()].strip()
+        if prefix:
+            pieces.append(copy.copy(block))
+            pieces[-1].text = prefix
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        option = text[match.start() : end].strip()
+        if option:
+            pieces.append(NormalizedBlock(kind="paragraph", text=option, page_idx=block.page_idx, bbox=list(block.bbox)))
+    return pieces or [block]
 
 
 def _layout_exam_options(options: list[NormalizedBlock]) -> list[NormalizedBlock]:
@@ -2174,11 +2197,11 @@ def _option_body(text: str) -> str:
 
 
 def _has_explicit_list_marker(text: str) -> bool:
-    return bool(re.match(r"^(?:[A-Za-z]|\d+)[.)]\s*", text.strip()))
+    return bool(re.match(r"^(?:[A-Za-z]|\d+)[.,:)]\s*", text.strip()))
 
 
 def _exam_option_match(text: str) -> re.Match[str] | None:
-    return re.match(r"^([A-Da-d])([.)])\s*", text.strip())
+    return re.match(r"^([A-Da-d])([.,:)])\s*", text.strip())
 
 
 def _normalize_exam_option_text(text: str) -> str:
@@ -2270,7 +2293,7 @@ def _style_exam_labels(paragraph: Any) -> None:
     question_match = re.match(r"^(Câu\s+\d+\s*[.:)])", text, flags=re.IGNORECASE)
     if question_match:
         _style_text_prefix(paragraph, len(question_match.group(1)), bold=True, italic=True)
-    for match in re.finditer(r"(^|\t)([A-Da-d][.)])\s*", text):
+    for match in re.finditer(r"(^|\t)([A-Da-d][.,:)])\s*", text):
         _style_text_range(paragraph, match.start(2), match.end(2), bold=True)
 
 

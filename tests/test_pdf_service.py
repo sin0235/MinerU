@@ -178,6 +178,17 @@ def test_v2_list_item_content_does_not_render_item_type(tmp_path: Path) -> None:
     assert blocks[0].items == ["a) Tại thời điểm bắt đầu phát hành video."]
 
 
+def test_exam_options_accept_lowercase_and_comma_colon_markers() -> None:
+    rows = [
+        block.text
+        for block in _format_exam_blocks(
+            [NormalizedBlock(kind="paragraph", text="a, 1 b: 2 c) 3 d. 4")]
+        )
+    ]
+
+    assert rows == ["a, 1\tb: 2\tc) 3\td. 4"]
+
+
 def test_explicit_lettered_list_items_are_not_bulleted(tmp_path: Path) -> None:
     service = PDFConversionService(tmp_path)
     output_path = tmp_path / "lettered.docx"
