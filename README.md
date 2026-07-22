@@ -1,3 +1,12 @@
+<div align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,12,20&height=180&section=header&text=PDF%20to%20Word%20with%20MinerU&fontSize=38&fontColor=fff&animation=twinkling&fontAlignY=35&desc=Document%20AI%20%E2%80%A2%20Layout%20Recovery%20%E2%80%A2%20DOCX%20Export&descAlignY=56&descSize=17" width="100%"/>
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
+    <img src="https://img.shields.io/badge/Flask-Web%20App-000000?style=for-the-badge&logo=flask&logoColor=white" alt="Flask"/>
+    <img src="https://img.shields.io/badge/MinerU-Document%20AI-6A5ACD?style=for-the-badge" alt="MinerU"/>
+  </p>
+</div>
+
 # PDF to Word with MinerU
 
 A Flask application that converts complex PDF documents into editable Word files while preserving text, images, tables, and mathematical expressions where possible.
@@ -44,3 +53,10 @@ tests/                     conversion-service checks
 - Conversion quality depends on the source PDF and MinerU output.
 - Scanned documents may require OCR-capable MinerU models.
 - Large documents require more processing time and memory.
+
+---
+
+<div align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=120&section=footer" width="100%"/>
+  <em>Document AI for editable, reusable content.</em>
+</div>
