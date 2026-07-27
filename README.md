@@ -7,52 +7,186 @@
   </p>
 </div>
 
-# PDF to Word with MinerU
+# PDF to Word Studio
 
-A Flask application that converts complex PDF documents into editable Word files while preserving text, images, tables, and mathematical expressions where possible.
+Ứng dụng Flask chuyển PDF thành DOCX có thể chỉnh sửa bằng MinerU.
 
-## How it works
+MinerU phân tích bố cục PDF. Dịch vụ này ưu tiên dữ liệu cấu trúc của MinerU để dựng lại tiêu đề, đoạn văn, danh sách, bảng, ảnh, biểu đồ, mã nguồn và công thức trong DOCX. Đây không phải bộ chuyển đổi giữ bố cục tuyệt đối; chất lượng đầu ra phụ thuộc PDF nguồn và kết quả phân tích của MinerU.
 
-1. Upload a PDF through the web interface.
-2. MinerU extracts the document into structured Markdown and assets.
-3. The conversion service rebuilds the content as a `.docx` file.
-4. Download the generated Word document.
+## Chức năng
 
-The service also handles HTML fragments, images, LaTeX, MathML, and Office Math conversion during document generation.
+- Tải PDF qua giao diện web, theo dõi tiến độ và log MinerU theo thời gian thực.
+- Chọn backend, phương thức phân tích, ngôn ngữ OCR, phạm vi trang, nhận diện bảng và công thức.
+- Ưu tiên `*_content_list_v2.json`, rồi `*_content_list.json`; chỉ fallback sang Markdown khi thiếu JSON phù hợp.
+- Tạo DOCX với bảng HTML, ảnh, biểu đồ, LaTeX/MathML và định dạng đề thi trắc nghiệm.
+- Preview DOCX/PDF, tải DOCX và ZIP artifact của từng job.
+- Lớp LLM tùy chọn: chỉ kiểm tra (`review`) hoặc áp dụng các patch văn bản an toàn (`correct`).
 
-## Setup
+## Luồng xử lý
+
+```text
+PDF upload
+  └─ MinerU
+      └─ structured JSON hoặc Markdown
+          └─ normalized blocks
+              └─ DOCX + artifact + preview/download
+```
+
+Mỗi job chạy trong `webapp/runtime/jobs/<job_id>/`. Thư mục này bị Git bỏ qua.
+
+## Yêu cầu
+
+- Python cho web app.
+- Python 3.10–3.13 riêng cho MinerU.
+- MinerU và model phù hợp backend đang dùng.
+
+`requirements.txt` chỉ chứa dependency web/DOCX. MinerU được tách thành môi trường riêng để tránh ràng buộc Python và CUDA của MinerU ảnh hưởng web app.
+
+## Chạy trên Linux/macOS
+
+Tạo môi trường web app.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install -U "mineru[core]"
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Tạo môi trường MinerU bằng Python 3.10–3.13. Ví dụ dùng Python 3.12.
+
+```bash
+python3.12 -m venv .venv-mineru
+.venv-mineru/bin/python -m pip install --upgrade pip
+.venv-mineru/bin/python -m pip install -U "mineru[all]" "mineru-vl-utils[transformers]"
+```
+
+Chạy web app.
+
+```bash
+export MINERU_PYTHON_EXE="$PWD/.venv-mineru/bin/python"
 python -m webapp.app
 ```
 
-On Windows, `scripts/setup_mineru_env.ps1` prepares the MinerU environment.
+Mở [http://127.0.0.1:8386](http://127.0.0.1:8386). Giao diện hiển thị trạng thái sẵn sàng của MinerU trước khi nhận job.
 
-## Test
+## Chạy trên Windows
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+.\scripts\setup_mineru_env.ps1
+$env:MINERU_PYTHON_EXE = (Resolve-Path ".\.venv-mineru\Scripts\python.exe").Path
+python -m webapp.app
+```
+
+`setup_mineru_env.ps1` cần Python 3.10–3.13; mặc định tìm Python 3.12 qua `py` launcher.
+
+## Cấu hình MinerU
+
+MinerU command được chọn theo thứ tự sau:
+
+1. `MINERU_COMMAND`
+2. `MINERU_PYTHON_EXE` — ứng dụng tìm CLI `mineru` trong cùng môi trường.
+3. `mineru` có trong `PATH`.
+
+Các biến thường dùng:
+
+```bash
+# App web
+export PDF_WORD_WEBAPP_HOST="0.0.0.0"       # mặc định
+export PDF_WORD_WEBAPP_PORT="8386"          # mặc định
+export PDF_WORD_MAX_UPLOAD_MB="128"         # 1–2048
+export PDF_WORD_BACKEND="auto"               # mặc định
+
+# MinerU
+export MINERU_PYTHON_EXE="$PWD/.venv-mineru/bin/python"
+export MINERU_MODEL_SOURCE="huggingface"     # mặc định
+export MINERU_VL_MODEL_NAME="opendatalab/MinerU2.5-Pro-2605-1.2B"
+export MINERU_TIMEOUT_SECONDS="3600"         # 60–86400
+
+# Dùng MinerU HTTP API thay cho engine cục bộ
+export MINERU_API_URL="https://mineru.example/v1"
+```
+
+`PDF_WORD_BACKEND=auto` chọn `vlm-http-client` khi có `MINERU_API_URL`; nếu không, chọn `hybrid-auto-engine` khi CUDA sẵn sàng, hoặc `pipeline` khi không có CUDA. Với lỗi CUDA/vLLM của backend tự động, job sẽ thử lại bằng `pipeline`.
+
+Các backend giao diện chấp nhận:
+
+```text
+auto
+pipeline
+hybrid-auto-engine
+hybrid-engine
+vlm-auto-engine
+vlm-engine
+hybrid-http-client
+vlm-http-client
+```
+
+Biến bổ sung:
+
+- `PDF_WORD_KEEP_ARTIFACTS`: mặc định `true`. Đặt `false` để lọc file output không thuộc nhóm artifact tải xuống.
+- `PDF_WORD_WEBAPP_DEBUG`: mặc định `false`.
+- `PDF_WORD_WEBAPP_RELOADER`: mặc định `false`.
+
+## LLM review
+
+LLM mặc định tắt. Khi bật, nội dung đã trích xuất được gửi tới provider đã chọn để tạo báo cáo hoặc patch văn bản. `correct` chỉ áp dụng patch qua kiểm tra an toàn của ứng dụng; không đảm bảo sửa đúng mọi lỗi ngữ nghĩa.
+
+| Provider | API key | Base URL mặc định |
+| --- | --- | --- |
+| NVIDIA | `NVIDIA_API_KEY` | `https://integrate.api.nvidia.com/v1` |
+| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
+| 9route | `ROUTER9_API_KEY` | `http://localhost:20128/v1` |
+
+9route cũng nhận `ROUTE9_API_KEY`, `NINEROUTE_API_KEY` và `9ROUTE_API_KEY`. Base URL có thể ghi đè bằng `NVIDIA_BASE_URL`, `OPENROUTER_BASE_URL`, `ROUTER9_BASE_URL`, `ROUTE9_BASE_URL` hoặc `9ROUTE_BASE_URL`.
+
+Trang **Settings** có thể lưu API key override, base URL và model trong `localStorage` của trình duyệt. Key này được gửi tới backend khi chạy LLM. Không dùng máy dùng chung, không chạy qua HTTP công cộng và không commit key vào repository.
+
+## API nội bộ
+
+| Method | Route | Mục đích |
+| --- | --- | --- |
+| `GET` | `/api/status` | Trạng thái MinerU và job hoàn tất gần đây |
+| `POST` | `/api/convert` | Tạo job từ form `multipart/form-data` chứa trường `pdf` |
+| `GET` | `/api/jobs/<job_id>` | Theo dõi tiến độ hoặc nhận kết quả job |
+| `GET` | `/downloads/<job_id>/<filename>` | Tải artifact |
+| `GET` | `/api/previews/<job_id>/<filename>` | Nhận preview HTML của DOCX |
+
+Giao diện web dùng các route này. `POST /api/convert` trả `202` khi job đã vào hàng đợi.
+
+## Kiểm tra
 
 ```bash
 pytest
 ```
 
-## Structure
+Test tập trung vào chuẩn hóa output MinerU, sinh DOCX, công thức, bảng, fallback backend, LLM provider và API Flask.
+
+## Cấu trúc
 
 ```text
-webapp/app.py              Flask routes and application setup
-webapp/pdf_service.py      MinerU execution and DOCX conversion
-webapp/templates/          web interface
-scripts/                   environment setup
-tests/                     conversion-service checks
+webapp/
+  app.py                 Flask routes, API và preview
+  pdf_service.py         MinerU, chuẩn hóa block, DOCX, LLM, job queue
+  templates/             giao diện Convert và Settings
+  static/                CSS, logo, voice preset
+  runtime/               job và artifact phát sinh, không commit
+scripts/
+  setup_mineru_env.ps1   tạo môi trường MinerU trên Windows
+tests/
+  test_pdf_service.py    test dịch vụ chuyển đổi
+requirements.txt         dependency web/DOCX
 ```
 
-## Notes
+## Giới hạn
 
-- Conversion quality depends on the source PDF and MinerU output.
-- Scanned documents may require OCR-capable MinerU models.
-- Large documents require more processing time and memory.
+- PDF scan cần backend/model OCR phù hợp.
+- Bảng, ảnh, công thức và bố cục phức tạp phụ thuộc chất lượng nhận diện của MinerU.
+- Job chạy nền bằng một worker trong tiến trình web. Khởi động lại ứng dụng làm mất trạng thái job trong bộ nhớ; file đã tạo vẫn nằm trong `webapp/runtime/jobs/`.
 
 ---
 
