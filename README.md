@@ -6,127 +6,134 @@
     <img src="https://img.shields.io/badge/MinerU-Document%20AI-6A5ACD?style=for-the-badge" alt="MinerU" />
     <img src="https://img.shields.io/badge/Output-Editable%20DOCX-2B579A?style=for-the-badge&logo=microsoftword&logoColor=white" alt="Editable DOCX" />
   </p>
+  <p><strong>Tiếng Việt</strong> · <a href="README.en.md">English</a></p>
 </div>
 
 # PDF to Word Studio
 
-PDF to Word Studio is a Document AI and document reconstruction system. It uses MinerU to parse PDF layout and content, normalizes MinerU-specific output into a common block representation, and rebuilds those blocks as an editable DOCX document.
+PDF to Word Studio là hệ thống **Document AI và tái tạo tài liệu**. MinerU phân tích bố cục và nội dung PDF; ứng dụng chuẩn hóa output đặc thù của MinerU thành biểu diễn tài liệu trung gian, sau đó dựng lại thành DOCX có thể chỉnh sửa.
 
-This is more than text extraction:
+```text
+PDF
+-> MinerU phân tích tài liệu / OCR
+-> structured JSON hoặc Markdown fallback
+-> normalized document blocks
+-> LLM review/correction tùy chọn
+-> tái tạo DOCX
+-> preview, download và artifacts
+```
+
+Đây không chỉ là trích xuất text và không cam kết tái tạo hình học PDF theo kiểu pixel-perfect.
+
+## Bài toán được giải quyết
 
 ```text
 Text extraction       PDF -> plain text
-OCR                   scanned page -> recognized text
-Document parsing      PDF -> structured layout and content elements
+OCR                   trang scan -> text được nhận diện
+Document parsing      PDF -> phần tử nội dung và bố cục có cấu trúc
 Document reconstruction
-                      structured elements -> editable Word structure
+                      phần tử có cấu trúc -> tài liệu Word có thể chỉnh sửa
 ```
 
-The project covers the last two stages and delegates OCR/layout understanding to the selected MinerU backend. It attempts to preserve useful document structure, not pixel-perfect PDF geometry.
+Project thực hiện hai giai đoạn cuối. MinerU chịu trách nhiệm document understanding, OCR và layout analysis; ứng dụng chịu trách nhiệm orchestration, normalization, DOCX reconstruction, job processing, preview và artifact management.
 
-## Technical Highlights
+## Điểm kỹ thuật nổi bật
 
-- **Structured JSON first:** `*_content_list_v2.json` is preferred over legacy `*_content_list.json`; Markdown is the final fallback.
-- **Normalized intermediate representation:** MinerU output is converted into `NormalizedBlock` objects before DOCX rendering.
-- **Custom DOCX reconstruction:** headings, paragraphs, flat lists, tables, figures, charts, equations, code blocks, captions, and footnotes have dedicated rendering paths.
-- **Equation conversion:** LaTeX is normalized and converted through MathML to Word OMML when possible, with text fallbacks when conversion fails.
-- **Backend orchestration:** local, accelerated, and HTTP-client MinerU backends share one command-building path.
-- **CUDA-aware automatic selection:** `auto` selects a remote client, local hybrid backend, or pipeline according to configuration and detected CUDA availability.
-- **Asynchronous conversion:** a single in-process worker handles queued jobs while the web UI polls progress and incremental MinerU logs.
-- **Optional guarded LLM layer:** review is read-only; correction applies only validated, local text patches.
+- **Structured JSON first:** ưu tiên `*_content_list_v2.json`, sau đó `*_content_list.json`; Markdown là fallback cuối.
+- **Biểu diễn trung gian:** `NormalizedBlock` tách MinerU format khỏi DOCX renderer.
+- **DOCX reconstruction riêng:** có đường render cho heading, paragraph, flat list, table, image, chart, equation, code, caption và footnote.
+- **Chuyển đổi công thức:** LaTeX được chuẩn hóa, chuyển qua MathML sang Word OMML khi có thể; lỗi chuyển đổi dùng text fallback.
+- **Nhiều MinerU backend:** backend local, accelerated và HTTP client dùng chung một luồng command construction.
+- **Tự động nhận biết CUDA:** `auto` chọn remote client, local hybrid hoặc `pipeline` theo config và CUDA availability.
+- **Job bất đồng bộ:** một in-process worker xử lý hàng đợi; frontend polling progress và log MinerU tăng dần.
+- **LLM tùy chọn có kiểm soát:** `review` không sửa tài liệu; `correct` chỉ áp dụng text patch vượt qua validation cục bộ.
 
-## End-to-End Architecture
+## Kiến trúc end-to-end
 
 ```mermaid
 flowchart TD
-    PDF[PDF upload] --> JOB[Local in-process job queue]
+    PDF[PDF upload] --> JOB[In-process job queue]
     JOB --> CLI[MinerU CLI orchestration]
-    CLI --> PARSE[MinerU document parsing / OCR / layout analysis]
-    PARSE --> RAW[Structured JSON and MinerU artifacts]
-    RAW --> V2{Readable content_list_v2?}
-    V2 -->|Yes| NORMALIZE[Content normalization]
-    V2 -->|No| LEGACY{Readable content_list?}
-    LEGACY -->|Yes| NORMALIZE
-    LEGACY -->|No| MD[Markdown fallback]
+    CLI --> PARSE[MinerU parsing / OCR / layout analysis]
+    PARSE --> RAW[Structured output và artifacts]
+    RAW --> V2{content_list_v2 đọc được?}
+    V2 -->|Có| NORMALIZE[Chuẩn hóa nội dung]
+    V2 -->|Không| LEGACY{content_list đọc được?}
+    LEGACY -->|Có| NORMALIZE
+    LEGACY -->|Không| MD[Markdown fallback]
     MD --> NORMALIZE
     NORMALIZE --> IR[NormalizedBlock list]
-    IR --> LLM{LLM mode}
-    LLM -->|off or review| RENDER[DOCX reconstruction]
-    LLM -->|validated corrections| RENDER
-    RENDER --> OUTPUT[DOCX, previews, downloads, artifacts]
+    IR --> LLM[LLM layer tùy chọn]
+    LLM --> RENDER[DOCX reconstruction]
+    RENDER --> OUTPUT[DOCX / preview / download / artifacts]
 ```
 
-### Responsibility boundary
+### Ranh giới trách nhiệm
 
-| Component | Responsibility |
+| Thành phần | Trách nhiệm |
 | --- | --- |
-| MinerU | PDF parsing, OCR when requested, layout/content analysis, table/formula detection, image extraction, and raw structured output. |
-| `PDFConversionService` | MinerU process orchestration, backend selection, output discovery, normalization, optional LLM review/correction, DOCX rendering, and artifact collection. |
-| Flask application | Upload validation, internal API, in-memory job state, polling payloads, preview endpoints, and downloads. |
-| Browser UI | Conversion options, local PDF preview, progress/log polling, simplified result previews, downloads, and local LLM provider overrides. |
+| MinerU | PDF parsing, OCR khi được yêu cầu, layout/content analysis, phát hiện bảng/công thức, extract ảnh và tạo raw structured output. |
+| `PDFConversionService` | Chạy MinerU subprocess, chọn backend, tìm output, normalization, LLM layer, DOCX rendering và thu thập artifact. |
+| Flask application | Upload validation, internal API, job state trong memory, polling payload, preview và download. |
+| Browser UI | Conversion options, PDF preview cục bộ, polling progress/log, result preview rút gọn và LLM provider settings. |
 
-## Input and Output Contract
+## Input và output
 
 ### Input
 
-`POST /api/convert` accepts `multipart/form-data` with a `pdf` upload and these conversion controls:
+`POST /api/convert` nhận `multipart/form-data` với file `pdf` không rỗng, tên kết thúc bằng `.pdf`, cùng các tùy chọn:
 
-| Input | Accepted values / behavior | Default |
+| Tùy chọn | Giá trị / behavior | Mặc định |
 | --- | --- | --- |
-| PDF | Filename must end in `.pdf`; non-empty; bounded by configured upload limit | Required |
 | Backend | `auto`, `pipeline`, `hybrid-auto-engine`, `hybrid-engine`, `vlm-auto-engine`, `vlm-engine`, `hybrid-http-client`, `vlm-http-client` | `auto` |
 | Parse method | `auto`, `txt`, `ocr` | `auto` |
-| OCR language | MinerU language code exposed by the UI, including `ch`, `en`, and `latin` | `ch` |
-| Formula recognition | Passed to MinerU CLI and generated MinerU config | Enabled |
-| Table recognition | Passed to MinerU CLI and generated MinerU config | Enabled |
-| Page range | UI uses 1-based start/end fields; end may be omitted | Start at page 1 |
-| HTTP server URL | Passed as MinerU `-u`; intended for HTTP-client backends | Empty |
-| LaTeX delimiters | `b` for `\(...\)` / `\[...\]`, `a` for dollar delimiters, or `all` | `b` |
-| Exam formatting | Heuristic multiple-choice formatting during DOCX generation | Disabled |
+| OCR language | MinerU language code được UI cung cấp, gồm `ch`, `en`, `latin` và các code khác | `ch` |
+| Formula recognition | Boolean truyền vào MinerU CLI và generated config | Bật |
+| Table recognition | Boolean truyền vào MinerU CLI và generated config | Bật |
+| Page range | UI dùng start/end page 1-based; end có thể để trống | Từ trang 1 |
+| HTTP server URL | Truyền bằng MinerU `-u`, dành cho HTTP-client backend | Rỗng |
+| LaTeX delimiter | `b` cho `\(...\)` / `\[...\]`, `a` cho dollar delimiter, hoặc `all` | `b` |
+| Exam formatting | Heuristic format đề trắc nghiệm khi tạo DOCX | Tắt |
 | LLM mode | `off`, `review`, `correct` | `off` |
 
-The upload limit defaults to **128 MB** and is clamped to `1–2048 MB` by `PDF_WORD_MAX_UPLOAD_MB`.
+Giới hạn upload mặc định là **128 MB**, được clamp trong khoảng `1–2048 MB` bằng `PDF_WORD_MAX_UPLOAD_MB`.
 
 ### Output
 
-Every successful job produces a DOCX. Other files depend on MinerU output and enabled options:
+Mỗi job thành công luôn tạo DOCX. Các output khác phụ thuộc MinerU và config:
 
 - MinerU Markdown;
-- `*_content_list_v2.json` or `*_content_list.json`;
-- layout/span PDFs and intermediate MinerU JSON when generated;
-- extracted images inside the MinerU job tree;
-- MinerU stdout/stderr logs;
-- optional LLM findings, patch records, request summary, fallback/error records, and Markdown report;
-- an on-demand ZIP containing job files except DOCX and the ZIP itself.
+- `*_content_list_v2.json` hoặc `*_content_list.json`;
+- layout/span PDF và intermediate MinerU JSON khi có;
+- ảnh được MinerU extract trong job tree;
+- `mineru_stdout.log` và `mineru_stderr.log`;
+- LLM findings, patch records, request summary, fallback/error records và Markdown report khi bật LLM;
+- ZIP tạo theo yêu cầu, chứa các file job còn tồn tại ngoại trừ DOCX và chính file ZIP.
 
-The ZIP includes the uploaded PDF and MinerU image/output files still present in the job directory. It is not only a filtered list of displayed artifacts.
+ZIP có thể chứa PDF upload ban đầu, ảnh và output MinerU; nó không chỉ chứa danh sách artifact hiển thị trên UI.
 
-## MinerU Integration
+## Tích hợp MinerU
 
-MinerU is an external Document AI engine, not a dependency imported into the Flask process. The application invokes its CLI as a subprocess and streams stdout/stderr into job progress.
+MinerU là external Document AI engine, không được import vào Flask process. Ứng dụng gọi MinerU CLI bằng subprocess và đưa stdout/stderr vào progress state của job.
 
 ```mermaid
 flowchart LR
-    WEB[Web environment<br/>Flask, python-docx, parsers] -->|subprocess| CMD[Configured MinerU executable]
+    WEB[Web environment<br/>Flask, python-docx, parsers] -->|subprocess| CMD[MinerU executable đã cấu hình]
     CMD --> MINERU[MinerU environment<br/>models, ML runtime, optional CUDA]
-    MINERU --> FILES[Structured output and artifacts]
+    MINERU --> FILES[Structured output và artifacts]
 ```
 
-Keeping web and MinerU environments separate avoids coupling the lightweight web/DOCX stack to MinerU's Python, model, and CUDA dependencies.
+Tách hai environment giúp web/DOCX stack không bị phụ thuộc vào ràng buộc Python, model, ML runtime và CUDA của MinerU.
 
-### Command resolution
+### Thứ tự tìm MinerU command
 
-The MinerU executable is resolved in this order:
+1. `MINERU_COMMAND`, được parse như complete command.
+2. `MINERU_PYTHON_EXE`: tìm `mineru` cạnh Python executable, sau đó tìm trong `PATH`, cuối cùng dùng `<python> -m mineru`.
+3. `mineru` trong `PATH`.
 
-1. `MINERU_COMMAND`, parsed as a complete command;
-2. `MINERU_PYTHON_EXE`, first looking for a sibling `mineru` executable, then a `mineru` executable in `PATH`, then falling back to `<python> -m mineru`;
-3. `mineru` from `PATH`.
-
-Readiness runs `<resolved command> --help` with a 20-second timeout. When `MINERU_PYTHON_EXE` is configured, Python 3.14 or newer is explicitly rejected; current project setup targets MinerU on Python **3.10–3.13**.
+Readiness chạy `<resolved command> --help` với timeout 20 giây. Khi dùng `MINERU_PYTHON_EXE`, Python 3.14 trở lên bị từ chối; setup hiện tại nhắm MinerU trên Python **3.10–3.13**.
 
 ### MinerU command construction
-
-The service constructs the equivalent of:
 
 ```bash
 mineru \
@@ -139,65 +146,74 @@ mineru \
   -t <true|false>
 ```
 
-Optional flags add start page (`-s`), end page (`-e`), server URL (`-u`), and `--api-url` for configured HTTP-client backends. The subprocess receives model source, VLM model, formula/table flags, and a generated `mineru_config.json` through environment variables.
+Start page (`-s`), end page (`-e`), server URL (`-u`) và `--api-url` được thêm khi phù hợp. Subprocess nhận model source, VLM model, formula/table flags và generated `mineru_config.json` qua environment.
 
-## Backend Selection and Fallback
+## Chiến lược backend
 
-### Automatic strategy
+### Lựa chọn tự động
 
 ```mermaid
 flowchart TD
-    AUTO[backend = auto] --> API{MINERU_API_URL configured?}
-    API -->|Yes| HTTP[vlm-http-client]
-    API -->|No| CUDA{torch.cuda.is_available()?}
-    CUDA -->|Yes| HYBRID[hybrid-auto-engine]
-    CUDA -->|No or unavailable| PIPELINE[pipeline]
+    AUTO[backend = auto] --> API{Có MINERU_API_URL?}
+    API -->|Có| HTTP[vlm-http-client]
+    API -->|Không| CUDA{torch.cuda.is_available?}
+    CUDA -->|Có| HYBRID[hybrid-auto-engine]
+    CUDA -->|Không| PIPELINE[pipeline]
 ```
 
-CUDA detection runs through `MINERU_PYTHON_EXE` when configured; otherwise it attempts to import `torch` in the web environment. The application only uses this check for `auto`. Explicit backends are passed directly to MinerU, so their actual hardware/runtime requirements remain MinerU concerns.
+Nếu có `MINERU_PYTHON_EXE`, CUDA detection chạy trong MinerU environment; nếu không, ứng dụng thử import `torch` trong web environment. Kiểm tra này chỉ phục vụ backend `auto`. Backend được chọn rõ ràng sẽ được truyền thẳng cho MinerU.
 
 ### Runtime fallback
 
-A job retries with `pipeline` only when all conditions hold:
+Job chỉ retry bằng `pipeline` khi đồng thời thỏa mãn:
 
-- the requested backend was `auto`;
-- `auto` resolved to `hybrid-auto-engine`;
-- MinerU failed with a recognized CUDA shared-library or vLLM import/installation error.
+- backend được yêu cầu là `auto`;
+- `auto` resolve thành `hybrid-auto-engine`;
+- MinerU lỗi do CUDA shared library hoặc lỗi import/cài đặt vLLM đã được nhận diện.
 
-Explicit accelerated backends, unrelated MinerU errors, invalid ranges, and timeouts do not trigger this fallback. MinerU execution timeout defaults to 3,600 seconds.
+Backend accelerated được chọn rõ ràng, lỗi MinerU không liên quan, page range không hợp lệ và timeout không kích hoạt fallback này. MinerU timeout mặc định là 3.600 giây.
 
-GPU is therefore not globally required: the application has a `pipeline` path and remote HTTP-client paths. No VRAM requirement or throughput benchmark is included in this repository.
+GPU không bắt buộc cho mọi cấu hình: ứng dụng có `pipeline` và remote HTTP-client path. Repository không có VRAM requirement hoặc throughput benchmark có thể tái lập.
 
-## Structured Document Representation
+## Biểu diễn tài liệu trung gian
 
-The renderer does not write MinerU dictionaries directly into Word. `_load_normalized_blocks()` uses this source priority:
+Thứ tự nguồn dữ liệu:
 
 ```text
 *_content_list_v2.json
-        -> *_content_list.json
-        -> newest Markdown file
+-> *_content_list.json
+-> file Markdown mới nhất
 ```
 
-Structured JSON is preferred because it preserves element types and metadata needed to distinguish headings, paragraphs, lists, tables, visuals, equations, and code. Markdown remains useful but loses part of that structure.
+Structured JSON giữ element type và metadata tốt hơn Markdown, giúp phân biệt title, paragraph, list, table, image, chart, equation và code trước khi render.
 
-`NormalizedBlock` decouples MinerU formats from DOCX rendering. Depending on block type, it carries text, heading level, list items, table HTML, image path, caption, footnote, language, page index, bounding box, and rich inline content.
+`NormalizedBlock` có thể chứa:
 
-For v2 output, blocks are sorted by bounding-box top/left coordinates. Headers, footers, page numbers, asides, page footnotes, and seals are skipped. `page_idx` and `bbox` support normalization/review context; the current DOCX renderer does not reproduce absolute page coordinates.
+- `kind`, text và heading level;
+- list items;
+- table HTML;
+- image path;
+- caption và footnote;
+- language;
+- page index và bounding box;
+- rich inline content.
 
-Markdown fallback recognizes headings, paragraphs, flat lists, pipe/HTML tables, image references, fenced code blocks, and explicit display equations. It is a recovery path, not an equivalent replacement for structured JSON.
+Với v2 output, block được sắp xếp theo tọa độ trên/trái của bounding box. Header, footer, page number, aside, page footnote và seal bị bỏ qua. `page_idx` và `bbox` phục vụ normalization/review context; renderer hiện tại không tái tạo absolute PDF coordinates.
 
-## DOCX Reconstruction
+Markdown fallback nhận diện heading, paragraph, flat list, pipe/HTML table, image reference, fenced code và display equation. Đây là đường phục hồi, không tương đương structured JSON.
 
-`python-docx` creates a new Word document from normalized blocks. Normal output uses Arial 11 pt; exam mode applies its own page and typography rules.
+## Tái tạo DOCX
+
+`python-docx` tạo tài liệu Word mới từ danh sách `NormalizedBlock`. Normal style dùng Arial 11 pt; exam mode dùng cấu hình riêng.
 
 ```mermaid
 flowchart TD
-    BLOCKS[NormalizedBlock list] --> TEXT[Headings and paragraphs]
-    BLOCKS --> LISTS[Flat list items]
-    BLOCKS --> TABLES[HTML / Markdown tables]
-    BLOCKS --> VISUALS[Images and charts]
-    BLOCKS --> MATH[Equations and inline math]
-    BLOCKS --> CODE[Code blocks]
+    BLOCKS[NormalizedBlock list] --> TEXT[Heading và paragraph]
+    BLOCKS --> LISTS[Flat list]
+    BLOCKS --> TABLES[HTML / Markdown table]
+    BLOCKS --> VISUALS[Image và chart]
+    BLOCKS --> MATH[Equation và inline math]
+    BLOCKS --> CODE[Code block]
     TEXT --> DOCX[Editable DOCX]
     LISTS --> DOCX
     TABLES --> DOCX
@@ -206,151 +222,156 @@ flowchart TD
     CODE --> DOCX
 ```
 
-### Text, headings, lists, and code
+### Text, heading, list và code
 
-- MinerU title levels become Word headings, capped at heading level 4.
-- Paragraph rich content keeps text/equation segments; fallback text also parses simple Markdown bold, italic, and inline-code markers.
-- List blocks become flat Word bullet paragraphs unless an explicit letter/number marker is already present in the item text.
-- Code blocks use Consolas 9 pt; captions and footnotes are rendered as italic paragraphs.
-- Nested-list hierarchy, absolute alignment, page breaks, and source PDF section geometry are not reconstructed.
+- MinerU title level trở thành Word heading, tối đa level 4.
+- Rich paragraph content giữ text/equation segment; fallback text parse Markdown bold, italic và inline code đơn giản.
+- List block trở thành flat Word bullet, trừ item đã có marker chữ/số rõ ràng.
+- Code block dùng Consolas 9 pt.
+- Caption và footnote được render thành paragraph italic.
+- Nested-list hierarchy, absolute alignment, page break và source section geometry không được tái tạo.
 
-### Tables
+### Bảng
 
 ```text
 MinerU table HTML
-    -> BeautifulSoup cell parsing
-    -> rectangular text matrix
-    -> Word Table Grid
+-> BeautifulSoup parse cell
+-> rectangular text matrix
+-> Word Table Grid
 ```
 
-Cell content supports the same inline text/math renderer. `colspan` is expanded by duplicating cell text; cells are not merged in Word. `rowspan`, nested tables, and source-specific visual styling are not reconstructed. If HTML cannot be parsed, the renderer falls back to table text, then to a table image when available.
+Cell dùng chung inline text/math renderer. `colspan` được mở rộng bằng cách lặp text, không tạo merged cell thật trong Word. `rowspan`, nested table và visual styling gốc không được tái tạo. Nếu HTML không parse được, renderer fallback sang table text, sau đó table image nếu có.
 
-### Images and figures
+### Ảnh và figure
 
-MinerU detects/extracts images and charts. The application resolves absolute or relative artifact paths, also searching nearby `images/` directories, then inserts the asset into DOCX.
+MinerU phát hiện/extract image và chart. Ứng dụng resolve absolute/relative path, tìm thêm trong các thư mục `images/` lân cận, sau đó chèn asset vào DOCX.
 
-Inserted visuals are centered and scaled down to page width, at most approximately 6.8 × 4.8 inches; smaller images are not enlarged. Captions are placed before the visual and footnotes after it. Missing or unreadable assets produce a text placeholder rather than aborting the whole document.
+Ảnh được căn giữa và chỉ scale nhỏ xuống để vừa trang, với giới hạn xấp xỉ 6,8 × 4,8 inch; ảnh nhỏ không bị phóng lớn. Caption nằm trước ảnh, footnote nằm sau. File thiếu hoặc không đọc được tạo text placeholder thay vì làm hỏng toàn bộ conversion.
 
-### Mathematical formulas
+### Công thức toán
 
-Inline and display delimiters are detected, and common implicit LaTeX patterns are also recognized heuristically. Formula rendering follows:
+Inline/display delimiter và một số implicit LaTeX pattern được nhận diện bằng heuristic.
 
 ```text
 LaTeX
-  -> normalization
-  -> latex2mathml
-  -> MathML
-  -> mathml2omml
-  -> Word OMML equation
+-> normalization
+-> latex2mathml
+-> MathML
+-> mathml2omml
+-> Word OMML equation
 ```
 
-If conversion fails, the renderer falls back to a limited plain-text representation; vector notation has an additional direct OMML fallback. Equations are therefore editable when OMML conversion succeeds, but not guaranteed to be fully editable or semantically identical for every LaTeX construct.
+Nếu conversion thất bại, renderer dùng plain-text representation giới hạn; vector notation có direct OMML fallback riêng. Công thức có thể chỉnh sửa khi OMML conversion thành công, nhưng không được đảm bảo cho mọi LaTeX construct.
 
-### Exam formatting
+### Format đề trắc nghiệm
 
-`exam_format` is a heuristic formatter, not semantic question answering. It:
+`exam_format` là heuristic formatter, không phải semantic question answering. Chức năng này:
 
-- detects A/B/C/D option markers;
-- sorts complete four-option groups;
-- places short options four per line, medium options two per line, and long options one per line;
-- uses Times New Roman 14 pt, 1.5 line spacing, justified body text, and fixed page margins;
-- emphasizes recognized question and option labels.
+- nhận diện marker A/B/C/D;
+- sắp xếp nhóm đủ bốn lựa chọn;
+- bố trí lựa chọn ngắn theo 4 cột, trung bình theo 2 cột, dài theo 1 cột;
+- dùng Times New Roman 14 pt, line spacing 1.5 và fixed margins;
+- nhấn mạnh question/option label được nhận diện.
 
-It does not determine correct answers or repair question semantics.
+Nó không xác định đáp án đúng hoặc sửa ngữ nghĩa câu hỏi.
 
-## OCR and Parsing Modes
-
-| Mode | Application behavior |
-| --- | --- |
-| `auto` | MinerU decides parsing strategy. |
-| `txt` | Requests MinerU text-based parsing. |
-| `ocr` | Forces MinerU OCR-oriented parsing; the UI also exposes a “Force OCR” toggle that selects this mode. |
-
-For scanned PDFs, recognition quality depends on scan quality, selected language, MinerU models, and backend. The repository does not implement its own OCR model.
-
-## Optional LLM Review and Correction
-
-The LLM layer is not required for PDF-to-DOCX conversion.
+## OCR và parse mode
 
 | Mode | Behavior |
 | --- | --- |
-| `off` | Skip all LLM calls. |
-| `review` | Send normalized text-bearing fields in page-sized chunks and write findings/report artifacts; DOCX content is unchanged. |
-| `correct` | Collect proposed patches, validate each patch locally, then render accepted changes. |
+| `auto` | MinerU quyết định chiến lược parse. |
+| `txt` | Yêu cầu MinerU parse theo text layer. |
+| `ocr` | Yêu cầu MinerU parse theo hướng OCR; toggle “Ép OCR” trên UI chọn mode này. |
 
-Only text-bearing normalized fields are exposed to patching: block text, list items, captions, and footnotes. Table HTML, image paths, ordering, and geometry are not patch targets.
+Ứng dụng không có OCR model riêng. Kết quả PDF scan phụ thuộc chất lượng scan, language, MinerU model và backend.
 
-A correction patch is accepted only when it has confidence ≥ 0.75, targets an existing field and exact `old_text`, preserves numbers and LaTeX command sequences, and stays within similarity/size limits. This reduces broad rewrites; it does not guarantee semantic correctness.
+## LLM review và correction tùy chọn
 
-Supported OpenAI-compatible providers:
+LLM không bắt buộc trong core PDF-to-DOCX pipeline.
 
-| Provider | API key | Default base URL | Default model behavior |
+| Mode | Behavior |
+| --- | --- |
+| `off` | Không gọi LLM. |
+| `review` | Gửi field có text theo chunk, ghi findings/report, không sửa block. |
+| `correct` | Nhận patch đề xuất, validate cục bộ, chỉ render thay đổi được chấp nhận. |
+
+Field có thể patch gồm block text, list item, caption và footnote. Table HTML, image path, thứ tự và geometry không phải patch target.
+
+Patch chỉ được chấp nhận khi:
+
+- confidence ≥ 0.75;
+- `block_index`, field và `old_text` khớp dữ liệu hiện tại;
+- không thay đổi chuỗi số;
+- không thay đổi LaTeX command sequence;
+- thay đổi nằm trong giới hạn similarity và kích thước.
+
+Cơ chế này giảm broad rewrite nhưng không bảo đảm semantic correctness.
+
+| Provider | API key | Base URL mặc định | Model mặc định |
 | --- | --- | --- | --- |
 | NVIDIA | `NVIDIA_API_KEY` | `https://integrate.api.nvidia.com/v1` | `google/gemma-3-27b-it` |
-| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `google/gemma-4-26b-a4b-it:free` through the `openrouter/` prefix |
-| 9route | `ROUTER9_API_KEY` and documented aliases | `http://localhost:20128/v1` | Must come from settings or `ROUTER9_TEXT_MODEL` / `ROUTE9_TEXT_MODEL` |
+| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `google/gemma-4-26b-a4b-it:free` |
+| 9route | `ROUTER9_API_KEY` và alias | `http://localhost:20128/v1` | Cần config/settings |
 
-The Settings page can query a provider's `/models` endpoint. Provider/model fallbacks are configuration-dependent; `router9_only` disables fallback away from 9route.
+Settings page có thể gọi endpoint `/models` của provider. `router9_only` tắt fallback sang provider khác.
 
-## Job Processing, Progress, and Artifacts
+## Job, progress và artifacts
 
-`POST /api/convert` stores the upload, creates a job, submits it to `ThreadPoolExecutor(max_workers=1)`, and returns `202 Accepted` with a `job_id`.
+`POST /api/convert` lưu upload, tạo job, submit vào `ThreadPoolExecutor(max_workers=1)` và trả `202 Accepted` với `job_id`.
 
 ```text
 upload -> queued -> running -> completed | failed
                        |
                        +-> prepare
                        +-> mineru
-                       +-> mineru_fallback (conditional)
+                       +-> mineru_fallback (nếu có)
                        +-> normalize
-                       +-> llm_review (optional)
+                       +-> llm_review (tùy chọn)
                        +-> docx
                        +-> artifacts
 ```
 
-The frontend polls `/api/jobs/<job_id>` every 1.8 seconds. Poll responses include stage, monotonic progress, estimated timing, message, and up to 400 recent terminal lines. This is polling-based incremental log display, not WebSocket streaming.
-
-Each job uses:
+Frontend poll `/api/jobs/<job_id>` mỗi 1,8 giây. Payload gồm stage, progress không lùi, timing estimate, message và tối đa 400 terminal line gần nhất. Đây là polling-based incremental log, không phải WebSocket streaming.
 
 ```text
 webapp/runtime/jobs/<job_id>/
-├── input/                 uploaded PDF
-├── mineru/                MinerU config, logs, structured output, images, PDFs
-├── docx/                  reconstructed Word document
-├── llm_review/            optional LLM reports and patch records
-└── artifacts_without_docx.zip   created only when requested
+├── input/                 PDF upload
+├── mineru/                config, log, structured output, image, PDF
+├── docx/                  tài liệu Word kết quả
+├── llm_review/            report và patch record tùy chọn
+└── artifacts_without_docx.zip   chỉ tạo khi được yêu cầu
 ```
 
-Job metadata lives only in process memory and expires after 24 hours of inactivity. Expiration or process restart removes API-visible state, not files. Runtime job files have no automatic filesystem retention cleanup in the current implementation.
+Job metadata chỉ tồn tại trong process memory và hết hạn sau 24 giờ không hoạt động. Restart hoặc metadata expiry làm mất API-visible state nhưng không xóa file. Implementation hiện tại không tự cleanup runtime files trên disk.
 
-### Preview behavior
+### Preview
 
-- Uploaded PDF preview uses a browser object URL before submission.
-- MinerU PDF artifacts can be served inline.
-- DOCX preview reopens the generated file and emits bounded HTML for paragraph/table text, including readable equation text.
-- DOCX preview is not a Word renderer: images, exact styles, pagination, and layout fidelity are not represented.
+- PDF trước upload dùng browser object URL.
+- MinerU PDF artifact có thể được serve inline.
+- DOCX preview mở lại file và sinh HTML giới hạn cho paragraph/table text và equation text.
+- DOCX preview không phải Word renderer: không thể hiện image, pagination, exact style hoặc layout fidelity.
 
 ## Internal Web API
 
-These routes support the bundled frontend. They are not versioned or authenticated as a public production API.
+Các route này phục vụ frontend đi kèm; chúng không phải production public API có version/authentication.
 
-| Method | Route | Purpose |
+| Method | Route | Mục đích |
 | --- | --- | --- |
-| `GET` | `/api/status` | MinerU readiness, upload limit, and recent in-memory results |
-| `POST` | `/api/convert` | Validate upload/options, enqueue conversion, return `202` and `job_id` |
-| `GET` | `/api/jobs/<job_id>` | Poll progress, logs, failure, or result |
-| `GET` | `/api/llm/providers` | Return provider defaults without API key values |
-| `POST` | `/api/llm/providers/<provider>/models` | Query an OpenAI-compatible model list |
-| `GET` | `/downloads/<job_id>/<filename>` | Download a job file |
-| `GET` | `/downloads/<job_id>/artifacts.zip` | Build and download the non-DOCX job ZIP |
-| `GET` | `/previews/<job_id>/<filename>` | Serve a PDF artifact inline |
-| `GET` | `/api/previews/<job_id>/<filename>` | Return simplified DOCX preview HTML in JSON |
+| `GET` | `/api/status` | MinerU readiness, upload limit và recent result trong memory |
+| `POST` | `/api/convert` | Validate upload/options, enqueue job, trả `202` và `job_id` |
+| `GET` | `/api/jobs/<job_id>` | Poll progress, log, lỗi hoặc result |
+| `GET` | `/api/llm/providers` | Provider defaults không chứa API key value |
+| `POST` | `/api/llm/providers/<provider>/models` | Query OpenAI-compatible model list |
+| `GET` | `/downloads/<job_id>/<filename>` | Download job file |
+| `GET` | `/downloads/<job_id>/artifacts.zip` | Tạo và download non-DOCX job ZIP |
+| `GET` | `/previews/<job_id>/<filename>` | Serve PDF artifact inline |
+| `GET` | `/api/previews/<job_id>/<filename>` | Trả simplified DOCX preview HTML trong JSON |
 
-## Installation
+## Cài đặt
 
 ### Environment 1 — Web application
 
-The repository does not pin the web interpreter version. Create an isolated environment and install the declared Flask, parsing, image, equation, DOCX, and test dependencies:
+Repository không pin phiên bản Python cho web environment.
 
 ```bash
 python -m venv .venv
@@ -359,9 +380,9 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### Environment 2 — MinerU on Linux/macOS
+### Environment 2 — MinerU trên Linux/macOS
 
-Use Python 3.10–3.13 for the MinerU environment. Example with Python 3.12:
+Dùng Python 3.10–3.13. Ví dụ với Python 3.12:
 
 ```bash
 python3.12 -m venv .venv-mineru
@@ -369,18 +390,16 @@ python3.12 -m venv .venv-mineru
 .venv-mineru/bin/python -m pip install -U "mineru[all]" "mineru-vl-utils[transformers]"
 ```
 
-Start the application from the activated web environment:
+Khởi động từ web environment đã activate:
 
 ```bash
 export MINERU_PYTHON_EXE="$PWD/.venv-mineru/bin/python"
 python -m webapp.app
 ```
 
-Open [http://127.0.0.1:8386](http://127.0.0.1:8386).
+Mở [http://127.0.0.1:8386](http://127.0.0.1:8386).
 
 ### Windows PowerShell
-
-The included script creates `.venv-mineru`, installs MinerU with `uv`, and attempts to download all Hugging Face models. It defaults to Python 3.12 through the `py` launcher and accepts a custom Python 3.10–3.13 executable.
 
 ```powershell
 py -m venv .venv
@@ -392,127 +411,143 @@ $env:MINERU_PYTHON_EXE = (Resolve-Path ".\.venv-mineru\Scripts\python.exe").Path
 python -m webapp.app
 ```
 
-## Configuration
+Script mặc định tìm Python 3.12, chấp nhận Python 3.10–3.13, cài MinerU bằng `uv` và thử tải model từ Hugging Face.
+
+## Cấu hình
 
 ### Web application
 
-| Variable | Default | Purpose |
+| Biến | Mặc định | Mục đích |
 | --- | --- | --- |
 | `PDF_WORD_WEBAPP_HOST` | `0.0.0.0` | Flask bind host |
-| `PDF_WORD_WEBAPP_PORT` | `8386` | Flask port; invalid values fall back to `8386` |
-| `PDF_WORD_MAX_UPLOAD_MB` | `128` | Upload limit, clamped to `1–2048` MB |
-| `PDF_WORD_BACKEND` | `auto` | Initial backend selection |
-| `PDF_WORD_KEEP_ARTIFACTS` | `true` | Keep full job tree; `false` prunes files outside retained artifact kinds after DOCX generation |
+| `PDF_WORD_WEBAPP_PORT` | `8386` | Flask port; giá trị không hợp lệ fallback về `8386` |
+| `PDF_WORD_MAX_UPLOAD_MB` | `128` | Upload limit, clamp `1–2048` MB |
+| `PDF_WORD_BACKEND` | `auto` | Backend mặc định trên UI |
+| `PDF_WORD_KEEP_ARTIFACTS` | `true` | Giữ full job tree; `false` prune file ngoài retained artifact kinds sau khi tạo DOCX |
 | `PDF_WORD_WEBAPP_DEBUG` | `false` | Flask debug mode |
 | `PDF_WORD_WEBAPP_RELOADER` | `false` | Flask reloader |
 
 ### MinerU
 
-| Variable | Default | Purpose |
+| Biến | Mặc định | Mục đích |
 | --- | --- | --- |
-| `MINERU_COMMAND` | Empty | Complete MinerU command override |
-| `MINERU_PYTHON_EXE` | Empty | Python executable for the separate MinerU environment |
-| `MINERU_MODEL_SOURCE` | `huggingface` | MinerU model source passed to subprocess |
-| `MINERU_VL_MODEL_NAME` | `opendatalab/MinerU2.5-Pro-2605-1.2B` | VLM model passed to subprocess |
-| `MINERU_API_URL` | Empty | Remote MinerU API URL; makes `auto` select `vlm-http-client` |
-| `MINERU_TIMEOUT_SECONDS` | `3600` | Process timeout, clamped to `60–86400` seconds |
-| `MINERU_TOOLS_CONFIG_JSON` | `~/mineru.json` when unset | Optional source config copied before applying LaTeX delimiter settings |
+| `MINERU_COMMAND` | Rỗng | Complete MinerU command override |
+| `MINERU_PYTHON_EXE` | Rỗng | Python executable của MinerU environment |
+| `MINERU_MODEL_SOURCE` | `huggingface` | Model source truyền cho subprocess |
+| `MINERU_VL_MODEL_NAME` | `opendatalab/MinerU2.5-Pro-2605-1.2B` | VLM model truyền cho subprocess |
+| `MINERU_API_URL` | Rỗng | Remote MinerU URL; khiến `auto` chọn `vlm-http-client` |
+| `MINERU_TIMEOUT_SECONDS` | `3600` | Timeout, clamp `60–86400` giây |
+| `MINERU_TOOLS_CONFIG_JSON` | `~/mineru.json` khi không đặt | Config nguồn trước khi ghi LaTeX delimiter settings |
 
-### Optional LLM
+### LLM tùy chọn
 
-| Variable | Default | Purpose |
+| Biến | Mặc định | Mục đích |
 | --- | --- | --- |
-| `PDF_WORD_LLM_PROVIDER` | `auto` | Initial provider selection |
-| `PDF_WORD_LLM_MODEL` | `google/gemma-3-27b-it` | Initial LLM model |
-| `NVIDIA_API_KEY` | Empty | NVIDIA credential |
-| `OPENROUTER_API_KEY` | Empty | OpenRouter credential |
-| `ROUTER9_API_KEY` | Empty | 9route credential; aliases also supported |
+| `PDF_WORD_LLM_PROVIDER` | `auto` | Provider ban đầu |
+| `PDF_WORD_LLM_MODEL` | `google/gemma-3-27b-it` | Model ban đầu |
+| `NVIDIA_API_KEY` | Rỗng | NVIDIA credential |
+| `OPENROUTER_API_KEY` | Rỗng | OpenRouter credential |
+| `ROUTER9_API_KEY` | Rỗng | 9route credential |
 | `NVIDIA_BASE_URL` | NVIDIA integration API | NVIDIA endpoint override |
 | `OPENROUTER_BASE_URL` | OpenRouter API | OpenRouter endpoint override |
 | `ROUTER9_BASE_URL` | `http://localhost:20128/v1` | 9route endpoint override |
-| `ROUTER9_TEXT_MODEL` | Empty | Default 9route text model |
-| `ROUTER9_ONLY` | `false` | Disable cross-provider fallback for 9route |
+| `ROUTER9_TEXT_MODEL` | Rỗng | 9route text model mặc định |
+| `ROUTER9_ONLY` | `false` | Tắt cross-provider fallback cho 9route |
 
-OpenRouter also supports `OPENROUTER_HTTP_REFERER` and `OPENROUTER_APP_NAME`. 9route aliases accepted by the implementation are `ROUTE9_API_KEY`, `NINEROUTE_API_KEY`, `9ROUTE_API_KEY`, `ROUTE9_BASE_URL`, `9ROUTE_BASE_URL`, `ROUTE9_TEXT_MODEL`, and `ROUTE9_ONLY`. Fallback models can be configured with `ROUTER9_FALLBACK_MODEL` / `ROUTE9_FALLBACK_MODEL`, `OPENROUTER_FALLBACK_MODEL`, and `NVIDIA_FALLBACK_MODEL`.
+OpenRouter còn hỗ trợ `OPENROUTER_HTTP_REFERER` và `OPENROUTER_APP_NAME`.
 
-## Usage
+9route aliases: `ROUTE9_API_KEY`, `NINEROUTE_API_KEY`, `9ROUTE_API_KEY`, `ROUTE9_BASE_URL`, `9ROUTE_BASE_URL`, `ROUTE9_TEXT_MODEL`, `ROUTE9_ONLY`.
 
-1. Open `/` and confirm that the MinerU readiness card is green.
-2. Select a PDF and review backend, parse method, language, page range, table/formula, exam, and optional LLM settings.
-3. Submit the form. The API returns a queued job immediately.
-4. Follow progress and MinerU terminal lines in the UI.
-5. Download the DOCX, inspect simplified previews, or download the job artifact ZIP.
+Fallback models: `ROUTER9_FALLBACK_MODEL` / `ROUTE9_FALLBACK_MODEL`, `OPENROUTER_FALLBACK_MODEL`, `NVIDIA_FALLBACK_MODEL`.
 
-Use `/settings` to manage browser-local LLM API key/base URL/model overrides and scan provider models.
+## Cách sử dụng
 
-## Project Structure
+1. Mở `/` và kiểm tra MinerU readiness card.
+2. Chọn PDF và cấu hình backend, parse method, language, page range, table/formula, exam và LLM nếu cần.
+3. Submit form; API trả queued job ngay.
+4. Theo dõi progress và MinerU terminal lines.
+5. Download DOCX, xem simplified preview hoặc tải artifact ZIP.
+
+Dùng `/settings` để quản lý browser-local LLM API key, base URL, model override và query model list.
+
+## Cấu trúc project
 
 ```text
 pdf-to-word-mineru/
 ├── webapp/
-│   ├── app.py                    Flask UI/API, preview, and download layer
+│   ├── app.py                    Flask UI/API, preview và download layer
 │   ├── pdf_service.py            MinerU orchestration, normalization, jobs,
-│   │                             LLM layer, and DOCX reconstruction
+│   │                             LLM layer và DOCX reconstruction
 │   ├── templates/
-│   │   ├── pdf_to_word.html      active conversion workflow
-│   │   ├── settings.html         active LLM provider settings
-│   │   └── base.html             shared application shell
+│   │   ├── pdf_to_word.html      conversion workflow đang active
+│   │   ├── settings.html         LLM provider settings đang active
+│   │   └── base.html             application shell dùng chung
 │   ├── static/css/style.css      active web styling
-│   └── runtime/jobs/             generated local job data; Git-ignored
-├── scripts/setup_mineru_env.ps1  Windows MinerU environment setup
-├── tests/test_pdf_service.py     service, renderer, fallback, LLM, and API tests
+│   └── runtime/jobs/             generated local job data, Git-ignored
+├── scripts/setup_mineru_env.ps1  setup MinerU environment trên Windows
+├── tests/test_pdf_service.py     test service, renderer, fallback, LLM và API
 ├── requirements.txt              web/DOCX/test dependencies
-└── README.md
+├── README.md                     tài liệu tiếng Việt mặc định
+└── README.en.md                  tài liệu English
 ```
 
-MinerU remains an external executable/environment rather than a source module in this repository.
+MinerU vẫn là external executable/environment, không phải source module của repository.
 
-## Testing
+## Kiểm thử
 
-After installing `requirements.txt`:
+Sau khi cài `requirements.txt`:
 
 ```bash
 pytest
 ```
 
-The current single test module contains 49 test functions covering structured and Markdown normalization, DOCX text/table/image-adjacent behavior, formula-to-OMML paths and fallbacks, exam heuristics, backend command construction and CUDA/vLLM fallback, job completion, artifact ZIP scoping, LLM provider mapping/fallback/safe request handling, DOCX preview, and selected Flask API validation.
+`tests/test_pdf_service.py` hiện có 49 test function, tập trung vào:
 
-The repository currently includes no sample PDF/DOCX fixture and no reproducible quantitative benchmark for OCR accuracy, table structure, layout similarity, or document fidelity.
+- structured và Markdown normalization;
+- DOCX text/table/formula behavior;
+- OMML conversion và fallback;
+- exam formatting heuristic;
+- MinerU command construction và CUDA/vLLM fallback;
+- job completion và artifact ZIP scoping;
+- LLM provider mapping, fallback và request handling;
+- DOCX preview và một số Flask API validation.
 
-## Limitations
+Repository chưa có sample PDF/DOCX fixture hoặc quantitative document-fidelity benchmark có thể tái lập.
 
-- Reconstruction is semantic/structural, not pixel-perfect; absolute positions, pagination, fonts, and complex multi-column geometry can differ from the PDF.
-- OCR and element quality depend on the source scan and selected MinerU backend/model.
-- Tables do not preserve true merged cells, `rowspan`, nested tables, or full visual styling.
-- Equation editability depends on successful LaTeX-to-OMML conversion; unsupported expressions fall back to limited text.
-- Lists are flat, and image placement is centered rather than reconstructed from PDF coordinates.
-- The job queue and metadata are in process memory with one worker; restart loses API-visible state and concurrent conversions serialize.
-- Optional LLM correction is constrained but cannot guarantee semantic correctness.
+## Giới hạn
 
-## Privacy and Security Notes
+- Tái tạo theo semantic/structure, không phải pixel-perfect conversion.
+- OCR và element quality phụ thuộc input và MinerU.
+- Không tái tạo merged cell thật, `rowspan`, nested table hoặc full table styling.
+- Formula editability phụ thuộc OMML conversion.
+- List là flat; ảnh được căn giữa thay vì đặt theo PDF coordinates.
+- Chỉ có một in-process worker; restart làm mất API-visible job state.
+- LLM correction không bảo đảm semantic correctness.
 
-- Uploaded PDFs and generated files are stored under `webapp/runtime/jobs/<job_id>/`. The directory is Git-ignored but has no automatic disk cleanup.
-- The artifact ZIP can include the original uploaded PDF and extracted MinerU files. Treat it as sensitive when the source document is sensitive.
-- HTTP-client MinerU backends may send the PDF to the configured MinerU service.
-- LLM modes send normalized extracted text fields to the selected external provider; they do not send the original PDF or image bytes through the LLM request path.
-- Environment API keys remain server-side. Settings-page overrides are stored in browser `localStorage`, submitted to the backend for the request, and excluded from result summaries/review artifacts.
-- Current routes have no authentication, and CORS permits requesting origins. Do not expose this development server to untrusted networks without an authenticated reverse proxy and appropriate transport security.
+## Riêng tư và bảo mật
 
-## Future Improvements
+- PDF upload và generated files nằm tại `webapp/runtime/jobs/<job_id>/`; chưa có automatic disk cleanup.
+- Artifact ZIP có thể chứa original PDF và extracted MinerU files.
+- HTTP-client backend có thể gửi PDF tới MinerU service được cấu hình.
+- LLM mode gửi normalized extracted text tới provider; không gửi original PDF hoặc image bytes qua LLM request path.
+- Environment API key ở server. Settings override nằm trong browser `localStorage`, được gửi tới backend khi request và không được ghi vào review/result artifacts.
+- Route hiện tại không có authentication; CORS cho phép requesting origin. Không expose development server ra mạng không tin cậy nếu chưa có reverse proxy xác thực và transport security phù hợp.
 
-- Persistent job metadata and an external worker queue for restart-safe/concurrent processing.
-- Explicit runtime retention and cleanup policies for uploads and artifacts.
-- Better multi-column, page-break, merged-cell, and image-placement reconstruction.
-- Reproducible document-fidelity fixtures and quantitative evaluation.
-- Authentication and deployment hardening for non-local use.
+## Hướng phát triển
+
+- Persistent job metadata và external worker queue.
+- Runtime retention/cleanup policy rõ ràng.
+- Tái tạo multi-column, page break, merged cell và image placement tốt hơn.
+- Reproducible fixtures và quantitative document-fidelity evaluation.
+- Authentication và deployment hardening.
 
 ## License
 
-No license file is currently included. Add an explicit license before redistribution or third-party reuse.
+Repository hiện chưa có license file.
 
 ---
 
 <div align="center">
   <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=120&section=footer" width="100%" alt="Footer" />
-  <em>Document AI for editable, reusable content.</em>
+  <em>Document AI cho nội dung có thể chỉnh sửa và tái sử dụng.</em>
 </div>
